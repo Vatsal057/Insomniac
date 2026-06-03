@@ -1,0 +1,16 @@
+# macOS
+.DS_Store
+
+# Swift Package Manager
+.build/
+.swiftpm/
+
+# Build artifacts
+*.app/
+*.dSYM/
+Archive.zip
+
+# Xcode (if any)
+*.xcodeproj/
+*.xcworkspace/
+DerivedData/
