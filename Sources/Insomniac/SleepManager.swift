@@ -20,6 +20,9 @@ final class SleepManager {
         }
     }
 
+    nonisolated private let rootDomain: io_service_t
+    private var _hasSudoPermissions: Bool?
+
     // IOKit lid-close notification
     private var notifyPort: IONotificationPortRef?
     private var lidNotification: io_object_t = 0
@@ -31,13 +34,22 @@ final class SleepManager {
     private var originalDisplaySleepAC: Int?
 
     private init() {
+        // Cache IOPMrootDomain
+        self.rootDomain = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("IOPMrootDomain"))
+
         originalDisplaySleepBattery = UserDefaults.standard.object(forKey: batteryKey) as? Int
         originalDisplaySleepAC = UserDefaults.standard.object(forKey: acKey) as? Int
 
         setupTerminationObserver()
 
-        // Kick off status check off the main thread so init doesn't block
-        Task { await self.checkStatus() }
+        // Initial status check
+        checkStatus()
+    }
+
+    deinit {
+        if rootDomain != 0 {
+            IOObjectRelease(rootDomain)
+        }
     }
 
     private func setupTerminationObserver() {
@@ -49,13 +61,13 @@ final class SleepManager {
             Task { @MainActor in
                 guard let self else { return }
                 if self.isSleepDisabled {
-                    self.setSleepDisabled(false)
+                    await self.setSleepDisabled(false)
                 }
             }
         }
     }
 
-    // MARK: - Lid monitor via IOKit notifications (replaces 1-second Timer poll)
+    // MARK: - Lid monitor via IOKit notifications
 
     private func startLidMonitor() {
         stopLidMonitor()
@@ -65,32 +77,17 @@ final class SleepManager {
 
         IONotificationPortSetDispatchQueue(port, DispatchQueue.main)
 
-        guard let matchingDict = IOServiceMatching("IOPMrootDomain") else { return }
-
-        // Retain the dict for the second call below
-        let matchingDict2 = matchingDict  // CF bridging; both calls consume a ref
-        _ = matchingDict2 // suppress unused warning — we pass it directly below
+        guard rootDomain != 0 else { return }
 
         let selfPtr = Unmanaged.passRetained(self).toOpaque()
 
-        // We register on kIOGeneralInterest — IOPMrootDomain posts
-        // kIOPMMessageClamshellStateChange among other power events.
-        var service = IOServiceGetMatchingService(kIOMainPortDefault, matchingDict)
-        guard service != 0 else {
-            IONotificationPortDestroy(port)
-            notifyPort = nil
-            return
-        }
-        defer { IOObjectRelease(service) }
-
         let kr = IOServiceAddInterestNotification(
             port,
-            service,
+            rootDomain,
             kIOGeneralInterest,
             { refcon, _, messageType, _ in
                 guard let refcon else { return }
                 let manager = Unmanaged<SleepManager>.fromOpaque(refcon).takeUnretainedValue()
-                // Any power message: re-evaluate lid state on main actor
                 Task { @MainActor in
                     manager.handleLidStateChange()
                 }
@@ -103,12 +100,14 @@ final class SleepManager {
             logger.error("IOServiceAddInterestNotification failed: \(kr)")
             IONotificationPortDestroy(port)
             notifyPort = nil
-            // Release the retained self we passed as refcon since callback won't fire
             Unmanaged<SleepManager>.fromOpaque(selfPtr).release()
         }
     }
 
     private func stopLidMonitor() {
+        dimTask?.cancel()
+        dimTask = nil
+
         if lidNotification != 0 {
             IOObjectRelease(lidNotification)
             lidNotification = 0
@@ -137,83 +136,82 @@ final class SleepManager {
     // MARK: - Toggle
 
     func toggleSleep() {
-        setSleepDisabled(!isSleepDisabled)
+        Task {
+            await setSleepDisabled(!isSleepDisabled)
+        }
     }
 
-    // MARK: - Status check (async — does not block main thread)
+    // MARK: - Status check (Fast, reads from IORegistry)
 
-    func checkStatus() async {
+    func checkStatus() {
+        guard rootDomain != 0 else { return }
+
+        if let property = IORegistryEntryCreateCFProperty(
+            rootDomain,
+            "SleepDisabled" as CFString,
+            kCFAllocatorDefault,
+            0
+        )?.takeRetainedValue() as? NSNumber {
+            self.isSleepDisabled = property.boolValue
+            logger.debug("Current sleep disabled status: \(self.isSleepDisabled)")
+        } else {
+            // Fallback to pmset if property is missing (rare)
+            Task {
+                await checkStatusViaPmset()
+            }
+        }
+    }
+
+    private func checkStatusViaPmset() async {
         let result = await Task.detached(priority: .utility) {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/usr/bin/pmset")
             process.arguments = ["-g"]
-
             let pipe = Pipe()
             process.standardOutput = pipe
-
             do {
                 try process.run()
                 let data = pipe.fileHandleForReading.readDataToEndOfFile()
                 return String(data: data, encoding: .utf8)
-            } catch {
-                return nil as String?
-            }
+            } catch { return nil }
         }.value
 
         guard let output = result else { return }
 
-        let lines = output.components(separatedBy: .newlines)
-        var found = false
-        for line in lines {
-            let lower = line.lowercased()
-            if lower.contains("sleepdisabled") || lower.contains("disablesleep") {
-                let parts = lower.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
-                if parts.count >= 2 {
-                    self.isSleepDisabled = (parts[1] == "1")
-                    found = true
-                    break
+        let lower = output.lowercased()
+        if lower.contains("sleepdisabled 1") || lower.contains("sleepdisabled\t1") ||
+           lower.contains("disablesleep 1") || lower.contains("disablesleep\t1") {
+            self.isSleepDisabled = true
+        } else {
+            self.isSleepDisabled = false
+        }
+    }
+
+    // MARK: - pmset helpers (Now Asynchronous)
+
+    private func getDisplaySleepValues() async -> (battery: Int?, ac: Int?) {
+        await Task.detached(priority: .userInitiated) {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/pmset")
+            process.arguments = ["-g", "custom"]
+            let pipe = Pipe()
+            process.standardOutput = pipe
+            do {
+                try process.run()
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                if let output = String(data: data, encoding: .utf8) {
+                    return SleepManager.parseDisplaySleepStatic(from: output)
                 }
-            }
-        }
-        if !found {
-            let lowercased = output.lowercased()
-            self.isSleepDisabled = lowercased.contains("sleepdisabled 1")
-                || lowercased.contains("sleepdisabled\t1")
-                || lowercased.contains("disablesleep 1")
-                || lowercased.contains("disablesleep\t1")
-        }
-        logger.debug("Current sleep disabled status: \(self.isSleepDisabled)")
+            } catch {}
+            return (nil, nil)
+        }.value
     }
 
-    // MARK: - pmset helpers (kept — sudo pmset is the chosen mechanism per project decision)
-
-    private func getDisplaySleepValues() -> (battery: Int?, ac: Int?) {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/pmset")
-        process.arguments = ["-g", "custom"]
-
-        let pipe = Pipe()
-        process.standardOutput = pipe
-
-        do {
-            try process.run()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            if let output = String(data: data, encoding: .utf8) {
-                return parseDisplaySleep(from: output)
-            }
-        } catch {
-            logger.error("Failed to get display sleep values: \(error.localizedDescription)")
-        }
-        return (nil, nil)
-    }
-
-    private func parseDisplaySleep(from output: String) -> (battery: Int?, ac: Int?) {
+    nonisolated private static func parseDisplaySleepStatic(from output: String) -> (battery: Int?, ac: Int?) {
         var batteryValue: Int?
         var acValue: Int?
-
         let lines = output.components(separatedBy: .newlines)
         var currentSection: String?
-
         for line in lines {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             if trimmed.hasSuffix("Power:") {
@@ -221,84 +219,81 @@ final class SleepManager {
             } else if trimmed.hasPrefix("displaysleep") {
                 let parts = trimmed.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
                 if parts.count >= 2, let value = Int(parts[1]) {
-                    if currentSection == "Battery Power:" {
-                        batteryValue = value
-                    } else if currentSection == "AC Power:" {
-                        acValue = value
-                    }
+                    if currentSection == "Battery Power:" { batteryValue = value }
+                    else if currentSection == "AC Power:" { acValue = value }
                 }
             }
         }
         return (batteryValue, acValue)
     }
 
-    private func setDisplaySleep(battery: Int?, ac: Int?) {
-        if let battery { runSudoPmset(args: ["-b", "displaysleep", String(battery)]) }
-        if let ac     { runSudoPmset(args: ["-c", "displaysleep", String(ac)]) }
+    private func setDisplaySleep(battery: Int?, ac: Int?) async {
+        if let battery { await runSudoPmset(args: ["-b", "displaysleep", String(battery)]) }
+        if let ac     { await runSudoPmset(args: ["-c", "displaysleep", String(ac)]) }
     }
 
-    private func runSudoPmset(args: [String]) {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
-        process.arguments = ["/usr/bin/pmset"] + args
-
-        do {
-            try process.run()
-            process.waitUntilExit()
-            if process.terminationStatus != 0 {
-                logger.error("Failed to run sudo pmset \(args.joined(separator: " ")). Exit code: \(process.terminationStatus)")
-            }
-        } catch {
-            logger.error("Failed to execute sudo pmset: \(error.localizedDescription)")
-        }
+    private func runSudoPmset(args: [String]) async {
+        await Task.detached(priority: .userInitiated) {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
+            process.arguments = ["/usr/bin/pmset"] + args
+            do {
+                try process.run()
+                process.waitUntilExit()
+            } catch {}
+        }.value
     }
 
-    private func hasPermissions() -> Bool {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
-        process.arguments = ["-n", "/usr/bin/pmset", "-g"]
+    private func hasPermissions() async -> Bool {
+        if let cached = _hasSudoPermissions { return cached }
 
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
+        let result = await Task.detached(priority: .userInitiated) {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
+            process.arguments = ["-n", "/usr/bin/pmset", "-g"]
+            do {
+                try process.run()
+                process.waitUntilExit()
+                return process.terminationStatus == 0
+            } catch { return false }
+        }.value
 
-        do {
-            try process.run()
-            process.waitUntilExit()
-            return process.terminationStatus == 0
-        } catch {
-            return false
-        }
+        if result { _hasSudoPermissions = true }
+        return result
     }
 
-    private func requestPermissions() -> Bool {
+    private func requestPermissions() async -> Bool {
         let username = NSUserName()
         let scriptSource = """
         do shell script "mkdir -p /etc/sudoers.d && echo '\(username) ALL=(ALL) NOPASSWD: /usr/bin/pmset' > /etc/sudoers.d/insomniac && chmod 0440 /etc/sudoers.d/insomniac" with administrator privileges
         """
 
-        var error: NSDictionary?
-        if let script = NSAppleScript(source: scriptSource) {
-            script.executeAndReturnError(&error)
-            if let error {
-                logger.error("AppleScript error: \(String(describing: error))")
-                return false
+        return await Task.detached(priority: .userInitiated) {
+            var error: NSDictionary?
+            if let script = NSAppleScript(source: scriptSource) {
+                script.executeAndReturnError(&error)
+                return error == nil
             }
-            return true
-        }
-        return false
+            return false
+        }.value
     }
 
-    private func setSleepDisabled(_ disabled: Bool) {
-        if !hasPermissions() {
-            guard requestPermissions() else {
+    private func setSleepDisabled(_ disabled: Bool) async {
+        let hasPerms = await hasPermissions()
+        if !hasPerms {
+            let requested = await requestPermissions()
+            guard requested else {
                 logger.error("Failed to acquire required permissions.")
                 return
             }
+            _hasSudoPermissions = true
         }
 
+        // Optimization: Update state first for UI responsiveness
+        isSleepDisabled = disabled
+
         if disabled {
-            let current = getDisplaySleepValues()
+            let current = await getDisplaySleepValues()
             if let battery = current.battery, originalDisplaySleepBattery == nil {
                 originalDisplaySleepBattery = battery
                 UserDefaults.standard.set(battery, forKey: batteryKey)
@@ -307,9 +302,9 @@ final class SleepManager {
                 originalDisplaySleepAC = ac
                 UserDefaults.standard.set(ac, forKey: acKey)
             }
-            runSudoPmset(args: ["-a", "displaysleep", "0"])
+            await runSudoPmset(args: ["-a", "displaysleep", "0"])
         } else {
-            setDisplaySleep(battery: originalDisplaySleepBattery, ac: originalDisplaySleepAC)
+            await setDisplaySleep(battery: originalDisplaySleepBattery, ac: originalDisplaySleepAC)
             originalDisplaySleepBattery = nil
             originalDisplaySleepAC = nil
             UserDefaults.standard.removeObject(forKey: batteryKey)
@@ -317,9 +312,6 @@ final class SleepManager {
         }
 
         let value = disabled ? "1" : "0"
-        runSudoPmset(args: ["-a", "disablesleep", value])
-
-        // Set state directly — we know what we just applied; no need to re-parse pmset output
-        isSleepDisabled = disabled
+        await runSudoPmset(args: ["-a", "disablesleep", value])
     }
 }
