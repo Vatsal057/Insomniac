@@ -23,6 +23,7 @@ final class SleepManager {
     // IOKit lid-close notification
     private var notifyPort: IONotificationPortRef?
     private var lidNotification: io_object_t = 0
+    private var dimTask: Task<Void, Never>?
 
     private let batteryKey = "originalDisplaySleepBattery"
     private let acKey = "originalDisplaySleepAC"
@@ -119,8 +120,15 @@ final class SleepManager {
     }
 
     private func handleLidStateChange() {
+        dimTask?.cancel()
+        dimTask = nil
+
         if DisplayManager.shared.isLidClosed() {
-            DisplayManager.shared.dimScreen()
+            dimTask = Task {
+                try? await Task.sleep(nanoseconds: 5 * 1_000_000_000)
+                guard !Task.isCancelled else { return }
+                DisplayManager.shared.dimScreen()
+            }
         } else {
             DisplayManager.shared.restoreScreen()
         }
