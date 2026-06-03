@@ -1,5 +1,6 @@
 import SwiftUI
 import ServiceManagement
+import KeyboardShortcuts
 
 @main
 struct InsomniacApp: App {
@@ -7,6 +8,12 @@ struct InsomniacApp: App {
 
     init() {
         NSApplication.shared.setActivationPolicy(.accessory)
+
+        // Set default shortcut to Cmd+Option+I (less likely to conflict than Cmd+Shift+T)
+        // Only set if not already defined in UserDefaults
+        if KeyboardShortcuts.getShortcut(for: .toggleSleep) == nil {
+            KeyboardShortcuts.setShortcut(.init(.i, modifiers: [.command, .option]), for: .toggleSleep)
+        }
 
         GlobalHotkeyManager.shared.onHotKeyPressed = {
             SleepManager.shared.toggleSleep()
@@ -28,7 +35,11 @@ struct InsomniacApp: App {
             Button(sleepManager.isSleepDisabled ? "Re-enable Sleep" : "Disable Sleep") {
                 sleepManager.toggleSleep()
             }
-            .keyboardShortcut("T", modifiers: [.command, .shift])
+
+            SettingsLink {
+                Text("Settings...")
+            }
+            .keyboardShortcut(",", modifiers: [.command])
 
             Divider()
 
@@ -38,6 +49,10 @@ struct InsomniacApp: App {
             .keyboardShortcut("Q", modifiers: [.command])
         } label: {
             Image(systemName: sleepManager.isSleepDisabled ? "sun.max.fill" : "moon.fill")
+        }
+
+        Settings {
+            SettingsView()
         }
     }
 }
