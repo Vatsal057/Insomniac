@@ -94,13 +94,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    // MARK: - Menu
+    // MARK: - Menu (minimal)
 
     private func showMenu() {
         let menu = NSMenu()
         menu.autoenablesItems = false
 
-        // Status header
         let isOn = sleepManager.isSleepDisabled
         let statusTitle = isOn ? "Sleep Prevention: ON" : "Sleep Prevention: OFF"
         let status = NSMenuItem(title: statusTitle, action: nil, keyEquivalent: "")
@@ -114,7 +113,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(.separator())
 
-        // Toggle — label says what will happen, not what is currently on
         let toggleTitle = isOn ? "Turn Off Sleep Prevention" : "Turn On Sleep Prevention"
         let toggle = NSMenuItem(title: toggleTitle, action: #selector(toggleSleep), keyEquivalent: "t")
         toggle.target = self
@@ -122,45 +120,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(.separator())
 
-        // Auto-deactivate
-        let autoDeactivate = NSMenuItem(title: "Auto-Deactivate on Sleep", action: #selector(toggleAutoDeactivate), keyEquivalent: "")
-        autoDeactivate.target = self
-        autoDeactivate.state = sleepManager.autoDeactivateOnSleep ? .on : .off
-        menu.addItem(autoDeactivate)
-
-        menu.addItem(.separator())
-
-        // Shortcut hint
-        if let shortcut = KeyboardShortcuts.getShortcut(for: .toggleSleep) {
-            let shortcutHint = NSMenuItem(title: "Toggle: \(shortcut.description)", action: nil, keyEquivalent: "")
-            shortcutHint.isEnabled = false
-            menu.addItem(shortcutHint)
-        }
-
-        // Settings
         let settings = NSMenuItem(title: "Settings\u{2026}", action: #selector(openSettings), keyEquivalent: ",")
         settings.target = self
         menu.addItem(settings)
 
-        // Remove sudo permissions
-        let removeSudo = NSMenuItem(title: "Remove Sudo Permissions", action: #selector(removeSudoPermissions), keyEquivalent: "")
-        removeSudo.target = self
-        menu.addItem(removeSudo)
-
         menu.addItem(.separator())
 
-        // About
-        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
-        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"
-        let about = NSMenuItem(title: "About Insomniac v\(version) (\(build))", action: #selector(showAbout), keyEquivalent: "")
-        about.target = self
-        menu.addItem(about)
-
-        menu.addItem(.separator())
-
-        // Quit
-        let quit = NSMenuItem(title: "Quit Insomniac", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
-        menu.addItem(quit)
+        menu.addItem(NSMenuItem(title: "Quit Insomniac", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
 
         statusItem.menu = menu
         statusItem.button?.performClick(nil)
@@ -171,32 +137,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func toggleSleep() {
         sleepManager.toggleSleep()
-    }
-
-    @objc private func toggleAutoDeactivate() {
-        sleepManager.autoDeactivateOnSleep.toggle()
-    }
-
-    @objc private func removeSudoPermissions() {
-        let alert = NSAlert()
-        alert.messageText = "Remove Sudo Permissions?"
-        alert.informativeText = "This will remove the passwordless sudo entry for pmset. You'll be prompted for your password next time you toggle sleep prevention."
-        alert.icon = NSImage(systemSymbolName: "shield.lefthalf.filled", accessibilityDescription: nil)
-        alert.addButton(withTitle: "Remove")
-        alert.addButton(withTitle: "Cancel")
-        alert.alertStyle = .warning
-
-        let response = alert.runModal()
-        if response == .alertFirstButtonReturn {
-            Task {
-                await sleepManager.removePermissions()
-                let done = NSAlert()
-                done.messageText = "Sudo Permissions Removed"
-                done.informativeText = "The passwordless sudo entry has been removed."
-                done.addButton(withTitle: "OK")
-                done.runModal()
-            }
-        }
     }
 
     @objc private func openSettings() {
@@ -210,30 +150,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let window = NSWindow(contentViewController: hostingController)
         window.title = "Insomniac Settings"
         window.styleMask = [.titled, .closable]
-        window.setContentSize(NSSize(width: 380, height: 220))
+        window.setContentSize(NSSize(width: 380, height: 340))
         window.center()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         settingsWindow = window
-    }
-
-    @objc private func showAbout() {
-        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
-        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"
-
-        let alert = NSAlert()
-        alert.messageText = "Insomniac"
-        alert.informativeText = """
-            Version \(version) (\(build))
-
-            A macOS menu bar app that keeps your Mac awake, \
-            even with the lid closed.
-
-            Built with Swift and IOKit.
-            """
-        alert.icon = NSImage(systemSymbolName: "eye.fill", accessibilityDescription: nil)
-        alert.addButton(withTitle: "OK")
-        alert.runModal()
     }
 
     // MARK: - First launch

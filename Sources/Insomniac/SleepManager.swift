@@ -43,11 +43,15 @@ final class SleepManager {
     private var originalDisplaySleepBattery: Int?
     private var originalDisplaySleepAC: Int?
 
+    private let screensaverKey = "originalScreensaverDisabled"
+    private var originalScreensaverDisabled: Bool?
+
     private init() {
         self.rootDomain = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("IOPMrootDomain"))
 
         originalDisplaySleepBattery = UserDefaults.standard.object(forKey: batteryKey) as? Int
         originalDisplaySleepAC = UserDefaults.standard.object(forKey: acKey) as? Int
+        originalScreensaverDisabled = UserDefaults.standard.object(forKey: screensaverKey) as? Bool
 
         setupTerminationObserver()
         setupSleepNotificationObserver()
@@ -116,6 +120,37 @@ final class SleepManager {
             trigger: nil
         )
         UNUserNotificationCenter.current().add(request)
+    }
+
+    // MARK: - Screensaver control
+
+    private func disableScreensaver() {
+        let current = UserDefaults.standard.bool(forKey: "com.apple.screensaver.idleTime")
+        if originalScreensaverDisabled == nil {
+            originalScreensaverDisabled = current
+            UserDefaults.standard.set(current, forKey: screensaverKey)
+        }
+        UserDefaults.standard.set(true, forKey: "com.apple.screensaver.idleTime")
+        runDefaultsWrite(domain: "com.apple.screensaver", key: "idleTime", value: true)
+    }
+
+    private func restoreScreensaver() {
+        if let original = originalScreensaverDisabled {
+            UserDefaults.standard.set(original, forKey: "com.apple.screensaver.idleTime")
+            runDefaultsWrite(domain: "com.apple.screensaver", key: "idleTime", value: original)
+            originalScreensaverDisabled = nil
+            UserDefaults.standard.removeObject(forKey: screensaverKey)
+        }
+    }
+
+    private func runDefaultsWrite(domain: String, key: String, value: Bool) {
+        Task.detached(priority: .utility) {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/defaults")
+            process.arguments = ["write", domain, key, "-bool", value ? "true" : "false"]
+            try? process.run()
+            process.waitUntilExit()
+        }
     }
 
     // MARK: - Lid monitor via IOKit notifications
@@ -382,8 +417,10 @@ final class SleepManager {
                 originalDisplaySleepAC = ac
                 UserDefaults.standard.set(ac, forKey: acKey)
             }
-            await runSudoPmset(args: ["-a", "displaysleep", "2"])
+            disableScreensaver()
+            await runSudoPmset(args: ["-a", "displaysleep", "0"])
         } else {
+            restoreScreensaver()
             await setDisplaySleep(battery: originalDisplaySleepBattery, ac: originalDisplaySleepAC)
             originalDisplaySleepBattery = nil
             originalDisplaySleepAC = nil
