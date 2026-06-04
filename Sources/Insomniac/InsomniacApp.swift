@@ -67,7 +67,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func updateIcon() {
         if let button = statusItem.button {
-            let name = sleepManager.isSleepDisabled ? "bolt.fill" : "moon.zzz.fill"
+            let name = sleepManager.isSleepDisabled ? "eye.fill" : "eye.slash.fill"
             button.image = NSImage(systemSymbolName: name, accessibilityDescription: "Insomniac")
         }
     }
@@ -198,7 +198,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
             Built with Swift and IOKit.
             """
-        alert.icon = NSImage(systemSymbolName: "bolt.fill", accessibilityDescription: nil)
+        alert.icon = NSImage(systemSymbolName: "eye.fill", accessibilityDescription: nil)
         alert.addButton(withTitle: "OK")
         alert.runModal()
     }
@@ -219,7 +219,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             On first use, macOS will ask for your password to configure \
             sleep settings. This only happens once.
             """
-        alert.icon = NSImage(systemSymbolName: "moon.zzz.fill", accessibilityDescription: nil)
+        alert.icon = NSImage(systemSymbolName: "eye.fill", accessibilityDescription: nil)
         alert.addButton(withTitle: "Get Started")
         alert.addButton(withTitle: "Quit")
         alert.alertStyle = .informational
