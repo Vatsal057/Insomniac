@@ -142,6 +142,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settings.target = self
         menu.addItem(settings)
 
+        // Remove sudo permissions
+        let removeSudo = NSMenuItem(title: "Remove Sudo Permissions", action: #selector(removeSudoPermissions), keyEquivalent: "")
+        removeSudo.target = self
+        menu.addItem(removeSudo)
+
         menu.addItem(.separator())
 
         // About
@@ -170,6 +175,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func toggleAutoDeactivate() {
         sleepManager.autoDeactivateOnSleep.toggle()
+    }
+
+    @objc private func removeSudoPermissions() {
+        let alert = NSAlert()
+        alert.messageText = "Remove Sudo Permissions?"
+        alert.informativeText = "This will remove the passwordless sudo entry for pmset. You'll be prompted for your password next time you toggle sleep prevention."
+        alert.icon = NSImage(systemSymbolName: "shield.lefthalf.filled", accessibilityDescription: nil)
+        alert.addButton(withTitle: "Remove")
+        alert.addButton(withTitle: "Cancel")
+        alert.alertStyle = .warning
+
+        let response = alert.runModal()
+        if response == .alertFirstButtonReturn {
+            Task {
+                await sleepManager.removePermissions()
+                let done = NSAlert()
+                done.messageText = "Sudo Permissions Removed"
+                done.informativeText = "The passwordless sudo entry has been removed."
+                done.addButton(withTitle: "OK")
+                done.runModal()
+            }
+        }
     }
 
     @objc private func openSettings() {

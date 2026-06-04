@@ -98,10 +98,13 @@ final class SleepManager {
     // MARK: - Notifications
 
     func requestNotificationPermission() {
+        guard Bundle.main.bundlePath.hasSuffix(".app") else { return }
         UNUserNotificationCenter.current().requestAuthorization(options: .alert) { _, _ in }
     }
 
     private func sendNotification(title: String, body: String) {
+        guard Bundle.main.bundlePath.hasSuffix(".app") else { return }
+
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
@@ -338,6 +341,21 @@ final class SleepManager {
                 return error == nil
             }
             return false
+        }.value
+    }
+
+    func removePermissions() async {
+        _hasSudoPermissions = nil
+
+        let scriptSource = """
+        do shell script "rm -f /etc/sudoers.d/insomniac" with administrator privileges
+        """
+
+        await Task.detached(priority: .userInitiated) {
+            var error: NSDictionary?
+            if let script = NSAppleScript(source: scriptSource) {
+                script.executeAndReturnError(&error)
+            }
         }.value
     }
 
