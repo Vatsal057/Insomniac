@@ -67,18 +67,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func updateIcon() {
         if let button = statusItem.button {
-            let name = sleepManager.isSleepDisabled ? "eye.fill" : "eye.slash.fill"
+            let name = sleepManager.isSleepDisabled ? "bolt.fill" : "moon.zzz.fill"
             button.image = NSImage(systemSymbolName: name, accessibilityDescription: "Insomniac")
         }
     }
 
     private func updateTooltip() {
         if let button = statusItem.button {
-            if sleepManager.isSleepDisabled {
-                button.toolTip = "Insomniac — Sleep is prevented. Click to turn off."
-            } else {
-                button.toolTip = "Insomniac — Click to prevent sleep."
-            }
+            let state = sleepManager.isSleepDisabled ? "ON" : "OFF"
+            button.toolTip = "Insomniac — Sleep Prevention: \(state)"
         }
     }
 
@@ -94,39 +91,65 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    // MARK: - Menu (minimal)
+    // MARK: - Menu
 
     private func showMenu() {
         let menu = NSMenu()
         menu.autoenablesItems = false
 
-        let isOn = sleepManager.isSleepDisabled
-        let statusTitle = isOn ? "Sleep Prevention: ON" : "Sleep Prevention: OFF"
+        // Status
+        let statusTitle = sleepManager.isSleepDisabled ? "Sleep Prevention: ON" : "Sleep Prevention: OFF"
         let status = NSMenuItem(title: statusTitle, action: nil, keyEquivalent: "")
         status.isEnabled = false
         let attrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.menuFont(ofSize: 13),
-            .foregroundColor: isOn ? NSColor.systemOrange : NSColor.secondaryLabelColor
+            .foregroundColor: sleepManager.isSleepDisabled ? NSColor.systemOrange : NSColor.secondaryLabelColor
         ]
         status.attributedTitle = NSAttributedString(string: statusTitle, attributes: attrs)
         menu.addItem(status)
 
         menu.addItem(.separator())
 
-        let toggleTitle = isOn ? "Turn Off Sleep Prevention" : "Turn On Sleep Prevention"
+        // Toggle
+        let toggleTitle = sleepManager.isSleepDisabled ? "Disable Sleep Prevention" : "Enable Sleep Prevention"
         let toggle = NSMenuItem(title: toggleTitle, action: #selector(toggleSleep), keyEquivalent: "t")
         toggle.target = self
         menu.addItem(toggle)
 
+        // Auto-deactivate
+        let autoDeactivate = NSMenuItem(title: "Auto-Deactivate on Sleep", action: #selector(toggleAutoDeactivate), keyEquivalent: "")
+        autoDeactivate.target = self
+        autoDeactivate.state = sleepManager.autoDeactivateOnSleep ? .on : .off
+        menu.addItem(autoDeactivate)
+
         menu.addItem(.separator())
 
+        // Shortcut hint
+        if let shortcut = KeyboardShortcuts.getShortcut(for: .toggleSleep) {
+            let shortcutHint = NSMenuItem(title: "Toggle: \(shortcut.description)", action: nil, keyEquivalent: "")
+            shortcutHint.isEnabled = false
+            menu.addItem(shortcutHint)
+        }
+
+        // Settings
         let settings = NSMenuItem(title: "Settings\u{2026}", action: #selector(openSettings), keyEquivalent: ",")
         settings.target = self
         menu.addItem(settings)
 
         menu.addItem(.separator())
 
-        menu.addItem(NSMenuItem(title: "Quit Insomniac", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+        // About
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
+        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"
+        let about = NSMenuItem(title: "About Insomniac v\(version) (\(build))", action: #selector(showAbout), keyEquivalent: "")
+        about.target = self
+        menu.addItem(about)
+
+        menu.addItem(.separator())
+
+        // Quit
+        let quit = NSMenuItem(title: "Quit Insomniac", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        menu.addItem(quit)
 
         statusItem.menu = menu
         statusItem.button?.performClick(nil)
@@ -137,6 +160,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func toggleSleep() {
         sleepManager.toggleSleep()
+    }
+
+    @objc private func toggleAutoDeactivate() {
+        sleepManager.autoDeactivateOnSleep.toggle()
     }
 
     @objc private func openSettings() {
@@ -150,11 +177,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let window = NSWindow(contentViewController: hostingController)
         window.title = "Insomniac Settings"
         window.styleMask = [.titled, .closable]
-        window.setContentSize(NSSize(width: 380, height: 340))
+        window.setContentSize(NSSize(width: 380, height: 220))
         window.center()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         settingsWindow = window
+    }
+
+    @objc private func showAbout() {
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
+        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"
+
+        let alert = NSAlert()
+        alert.messageText = "Insomniac"
+        alert.informativeText = """
+            Version \(version) (\(build))
+
+            A macOS menu bar app that keeps your Mac awake, \
+            even with the lid closed.
+
+            Built with Swift and IOKit.
+            """
+        alert.icon = NSImage(systemSymbolName: "bolt.fill", accessibilityDescription: nil)
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 
     // MARK: - First launch
@@ -165,21 +211,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.informativeText = """
             Insomniac keeps your Mac awake even when the lid is closed.
 
-            \u{2022} Left-click the eye icon to toggle sleep prevention
+            How it works:
+            \u{2022} Left-click the menu bar icon to toggle sleep prevention
             \u{2022} Right-click for options and settings
-            \u{2022} Use \u{2318}\u{2325}I as a global shortcut
+            \u{2022} Use \u{2318}\u{2325}I to toggle from anywhere
 
-            macOS will ask for your password once to configure sleep settings.
+            On first use, macOS will ask for your password to configure \
+            sleep settings. This only happens once.
             """
-        alert.icon = NSImage(systemSymbolName: "eye.fill", accessibilityDescription: nil)
-        alert.addButton(withTitle: "Turn On Sleep Prevention")
+        alert.icon = NSImage(systemSymbolName: "moon.zzz.fill", accessibilityDescription: nil)
+        alert.addButton(withTitle: "Get Started")
         alert.addButton(withTitle: "Quit")
         alert.alertStyle = .informational
 
         let response = alert.runModal()
-        if response == .alertFirstButtonReturn {
-            sleepManager.toggleSleep()
-        } else {
+        if response == .alertSecondButtonReturn {
             NSApp.terminate(nil)
         }
     }
