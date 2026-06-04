@@ -10,6 +10,22 @@ final class SleepManager {
 
     private let logger = Logger(subsystem: "com.insomniac.app", category: "SleepManager")
 
+    struct DurationOption: Identifiable, Hashable {
+        let id: String
+        let title: String
+        let seconds: TimeInterval?
+
+        static let indefinite = DurationOption(id: "indefinite", title: "Indefinitely", seconds: nil)
+        static let thirtyMinutes = DurationOption(id: "30m", title: "30 minutes", seconds: 30 * 60)
+        static let oneHour = DurationOption(id: "1h", title: "1 hour", seconds: 60 * 60)
+        static let threeHours = DurationOption(id: "3h", title: "3 hours", seconds: 3 * 60 * 60)
+        static let eightHours = DurationOption(id: "8h", title: "8 hours", seconds: 8 * 60 * 60)
+
+        static let presets: [DurationOption] = [
+            .thirtyMinutes, .oneHour, .threeHours, .eightHours
+        ]
+    }
+
     private(set) var isSleepDisabled: Bool = false {
         didSet {
             if isSleepDisabled {
@@ -21,9 +37,18 @@ final class SleepManager {
         }
     }
 
+    private(set) var sleepDisabledUntil: Date?
+
+    var remainingTime: TimeInterval? {
+        guard let until = sleepDisabledUntil else { return nil }
+        let remaining = until.timeIntervalSinceNow
+        return remaining > 0 ? remaining : nil
+    }
+
     nonisolated private let rootDomain: io_service_t
     private var _hasSudoPermissions: Bool?
     private var isToggling = false
+    private var durationTask: Task<Void, any Error>?
 
     let autoDeactivateKey = "autoDeactivateOnSleep"
     var autoDeactivateOnSleep: Bool {
@@ -31,13 +56,23 @@ final class SleepManager {
         set { UserDefaults.standard.set(newValue, forKey: autoDeactivateKey) }
     }
 
+    let defaultDurationKey = "defaultSleepDurationSeconds"
+    var defaultDuration: TimeInterval? {
+        get {
+            let val = UserDefaults.standard.double(forKey: defaultDurationKey)
+            return val > 0 ? val : nil
+        }
+        set {
+            if let newValue, newValue > 0 {
+                UserDefaults.standard.set(newValue, forKey: defaultDurationKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: defaultDurationKey)
+            }
+        }
+    }
+
     private let firstLaunchKey = "hasLaunchedBefore"
     var isFirstLaunch: Bool { !UserDefaults.standard.bool(forKey: firstLaunchKey) }
-
-    // Timer
-    private var sleepDisableTimer: Timer?
-    private(set) var sleepDisableDeadline: Date?
-    private(set) var remainingTime: TimeInterval = 0
 
     private var notifyPort: IONotificationPortRef?
     private var lidNotification: io_object_t = 0
@@ -95,6 +130,9 @@ final class SleepManager {
         ) { [weak self] _ in
             Task { @MainActor in
                 guard let self, self.autoDeactivateOnSleep, self.isSleepDisabled else { return }
+                self.durationTask?.cancel()
+                self.durationTask = nil
+                self.sleepDisabledUntil = nil
                 await self.setSleepDisabled(false)
             }
         }
@@ -106,7 +144,7 @@ final class SleepManager {
         UNUserNotificationCenter.current().requestAuthorization(options: .alert) { _, _ in }
     }
 
-    func sendNotification(title: String, body: String) {
+    private func sendNotification(title: String, body: String) {
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
@@ -120,56 +158,7 @@ final class SleepManager {
         UNUserNotificationCenter.current().add(request)
     }
 
-    // MARK: - Timer
-
-    func startSleepDisableTimer(_ duration: TimeInterval) {
-        cancelTimer()
-
-        guard duration > 0 else { return }
-
-        sleepDisableDeadline = Date().addingTimeInterval(duration)
-        remainingTime = duration
-
-        sleepDisableTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                guard let self, let deadline = self.sleepDisableDeadline else { return }
-                let remaining = deadline.timeIntervalSinceNow
-
-                if remaining <= 0 {
-                    self.cancelTimer()
-                    await self.setSleepDisabled(false)
-                    self.sendNotification(
-                        title: "Sleep Prevention Ended",
-                        body: "Your timer has expired. Sleep is now re-enabled."
-                    )
-                } else {
-                    self.remainingTime = remaining
-                }
-            }
-        }
-    }
-
-    func cancelTimer() {
-        sleepDisableTimer?.invalidate()
-        sleepDisableTimer = nil
-        sleepDisableDeadline = nil
-        remainingTime = 0
-    }
-
-    func formatTime(_ interval: TimeInterval) -> String {
-        let totalSeconds = max(0, Int(interval))
-        let hours = totalSeconds / 3600
-        let minutes = (totalSeconds % 3600) / 60
-        let seconds = totalSeconds % 60
-
-        if hours > 0 {
-            return "\(hours)h \(minutes)m"
-        } else {
-            return "\(minutes)m \(seconds)s"
-        }
-    }
-
-    // MARK: - Lid monitor
+    // MARK: - Lid monitor via IOKit notifications
 
     private func startLidMonitor() {
         stopLidMonitor()
@@ -238,12 +227,98 @@ final class SleepManager {
     // MARK: - Toggle
 
     func toggleSleep() {
+        if isSleepDisabled {
+            disableSleep()
+        } else {
+            enableSleep(duration: defaultDuration)
+        }
+    }
+
+    func enableSleep(duration: TimeInterval?) {
         guard !isToggling else { return }
         isToggling = true
+
+        durationTask?.cancel()
+        durationTask = nil
+
+        if let duration, duration > 0 {
+            sleepDisabledUntil = Date().addingTimeInterval(duration)
+        } else {
+            sleepDisabledUntil = nil
+        }
+
         Task {
-            let newState = !isSleepDisabled
-            await setSleepDisabled(newState)
+            await setSleepDisabled(true)
             isToggling = false
+
+            if let duration, duration > 0 {
+                scheduleDurationExpiration(duration: duration)
+                let formatted = formatDuration(duration)
+                sendNotification(
+                    title: "Sleep Prevention Enabled",
+                    body: "Your Mac will stay awake for \(formatted)."
+                )
+            } else {
+                sendNotification(
+                    title: "Sleep Prevention Enabled",
+                    body: "Your Mac will stay awake indefinitely."
+                )
+            }
+        }
+    }
+
+    func disableSleep() {
+        guard !isToggling else { return }
+        isToggling = true
+
+        durationTask?.cancel()
+        durationTask = nil
+        sleepDisabledUntil = nil
+
+        Task {
+            await setSleepDisabled(false)
+            isToggling = false
+            sendNotification(
+                title: "Sleep Prevention Disabled",
+                body: "Your Mac can now sleep normally."
+            )
+        }
+    }
+
+    private func scheduleDurationExpiration(duration: TimeInterval) {
+        durationTask = Task { [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: UInt64(duration * 1_000_000_000))
+                guard let self, self.isSleepDisabled else { return }
+                self.sleepDisabledUntil = nil
+                await self.setSleepDisabled(false)
+                self.sendNotification(
+                    title: "Sleep Prevention Expired",
+                    body: "Your Mac can now sleep normally."
+                )
+            } catch is CancellationError {}
+        }
+    }
+
+    // MARK: - Formatting
+
+    func formatRemainingTime() -> String? {
+        guard let remaining = remainingTime else { return nil }
+        return formatDuration(remaining)
+    }
+
+    private func formatDuration(_ seconds: TimeInterval) -> String {
+        let total = Int(seconds)
+        let hours = total / 3600
+        let minutes = (total % 3600) / 60
+        if hours > 0 && minutes > 0 {
+            return "\(hours)h \(minutes)m"
+        } else if hours > 0 {
+            return "\(hours) hour\(hours == 1 ? "" : "s")"
+        } else if minutes > 0 {
+            return "\(minutes) minute\(minutes == 1 ? "" : "s")"
+        } else {
+            return "less than a minute"
         }
     }
 
@@ -414,7 +489,6 @@ final class SleepManager {
             }
             await runSudoPmset(args: ["-a", "displaysleep", "0"])
         } else {
-            cancelTimer()
             await setDisplaySleep(battery: originalDisplaySleepBattery, ac: originalDisplaySleepAC)
             originalDisplaySleepBattery = nil
             originalDisplaySleepAC = nil

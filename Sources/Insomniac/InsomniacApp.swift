@@ -26,6 +26,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private let sleepManager = SleepManager.shared
     private var settingsWindow: NSWindow?
+    private var tooltipTimer: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -44,6 +45,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         sleepManager.requestNotificationPermission()
         observeState()
+        startTooltipTimer()
 
         if sleepManager.isFirstLaunch {
             showWelcomeAlert()
@@ -51,12 +53,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    func applicationWillTerminate(_ notification: Notification) {
+        tooltipTimer?.invalidate()
+    }
+
     // MARK: - State observation
 
     private func observeState() {
         withObservationTracking {
             _ = sleepManager.isSleepDisabled
-            _ = sleepManager.remainingTime
+            _ = sleepManager.sleepDisabledUntil
         } onChange: { [weak self] in
             Task { @MainActor in
                 self?.updateIcon()
@@ -75,12 +81,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func updateTooltip() {
         if let button = statusItem.button {
-            if sleepManager.isSleepDisabled, sleepManager.sleepDisableDeadline != nil {
-                let time = sleepManager.formatTime(sleepManager.remainingTime)
-                button.toolTip = "Insomniac — Sleep Prevention: ON (\(time) remaining)"
+            if let remaining = sleepManager.formatRemainingTime() {
+                button.toolTip = "Insomniac — Sleep Prevention: ON (\(remaining) remaining)"
             } else {
                 let state = sleepManager.isSleepDisabled ? "ON" : "OFF"
                 button.toolTip = "Insomniac — Sleep Prevention: \(state)"
+            }
+        }
+    }
+
+    private func startTooltipTimer() {
+        tooltipTimer?.invalidate()
+        tooltipTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                self?.updateTooltip()
             }
         }
     }
@@ -103,131 +117,154 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let menu = NSMenu()
         menu.autoenablesItems = false
 
-        // Status
-        let statusTitle: String
-        if sleepManager.isSleepDisabled, sleepManager.sleepDisableDeadline != nil {
-            let time = sleepManager.formatTime(sleepManager.remainingTime)
-            statusTitle = "Sleep Prevention: ON (\(time))"
+        if sleepManager.isSleepDisabled {
+            addActiveStateMenu(to: menu)
         } else {
-            statusTitle = sleepManager.isSleepDisabled ? "Sleep Prevention: ON" : "Sleep Prevention: OFF"
+            addInactiveStateMenu(to: menu)
         }
-        let status = NSMenuItem(title: statusTitle, action: nil, keyEquivalent: "")
-        status.isEnabled = false
-        let statusColor: NSColor = sleepManager.isSleepDisabled ? .systemOrange : .secondaryLabelColor
-        let attrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.menuFont(ofSize: 13),
-            .foregroundColor: statusColor
-        ]
-        status.attributedTitle = NSAttributedString(string: statusTitle, attributes: attrs)
-        menu.addItem(status)
-
-        menu.addItem(.separator())
-
-        // Toggle
-        let toggleTitle = sleepManager.isSleepDisabled ? "Disable Sleep Prevention" : "Enable Sleep Prevention"
-        let toggle = NSMenuItem(title: toggleTitle, action: #selector(toggleSleep), keyEquivalent: "t")
-        toggle.target = self
-        menu.addItem(toggle)
-
-        // Duration submenu
-        if !sleepManager.isSleepDisabled {
-            let durationItem = NSMenuItem(title: "Set Duration", action: nil, keyEquivalent: "")
-            let durationMenu = NSMenu()
-
-            let durations: [(String, TimeInterval)] = [
-                ("30 minutes", 1800),
-                ("1 hour", 3600),
-                ("2 hours", 7200),
-                ("4 hours", 14400),
-                ("8 hours", 28800),
-            ]
-
-            for (label, interval) in durations {
-                let item = NSMenuItem(title: label, action: #selector(setDuration(_:)), keyEquivalent: "")
-                item.target = self
-                item.tag = Int(interval)
-                durationMenu.addItem(item)
-            }
-
-            durationMenu.addItem(.separator())
-
-            let untilQuit = NSMenuItem(title: "Until I quit", action: #selector(setDurationUntilQuit), keyEquivalent: "")
-            untilQuit.target = self
-            durationMenu.addItem(untilQuit)
-
-            durationItem.submenu = durationMenu
-            menu.addItem(durationItem)
-        }
-
-        // Cancel timer
-        if sleepManager.isSleepDisabled, sleepManager.sleepDisableDeadline != nil {
-            let cancel = NSMenuItem(title: "Cancel Timer", action: #selector(cancelTimer), keyEquivalent: "")
-            cancel.target = self
-            menu.addItem(cancel)
-        }
-
-        // Auto-deactivate
-        let autoDeactivate = NSMenuItem(title: "Auto-Deactivate on Sleep", action: #selector(toggleAutoDeactivate), keyEquivalent: "")
-        autoDeactivate.target = self
-        autoDeactivate.state = sleepManager.autoDeactivateOnSleep ? .on : .off
-        menu.addItem(autoDeactivate)
-
-        menu.addItem(.separator())
-
-        // Shortcut hint
-        if let shortcut = KeyboardShortcuts.getShortcut(for: .toggleSleep) {
-            let shortcutHint = NSMenuItem(title: "Toggle: \(shortcut.description)", action: nil, keyEquivalent: "")
-            shortcutHint.isEnabled = false
-            menu.addItem(shortcutHint)
-        }
-
-        // Settings
-        let settings = NSMenuItem(title: "Settings\u{2026}", action: #selector(openSettings), keyEquivalent: ",")
-        settings.target = self
-        menu.addItem(settings)
-
-        menu.addItem(.separator())
-
-        // About
-        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
-        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"
-        let about = NSMenuItem(title: "About Insomniac v\(version) (\(build))", action: #selector(showAbout), keyEquivalent: "")
-        about.target = self
-        menu.addItem(about)
-
-        menu.addItem(.separator())
-
-        // Quit
-        let quit = NSMenuItem(title: "Quit Insomniac", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
-        menu.addItem(quit)
 
         statusItem.menu = menu
         statusItem.button?.performClick(nil)
         statusItem.menu = nil
     }
 
+    private func addInactiveStateMenu(to menu: NSMenu) {
+        let status = NSMenuItem(title: "Sleep Prevention: OFF", action: nil, keyEquivalent: "")
+        status.isEnabled = false
+        status.attributedTitle = styledTitle(
+            "Sleep Prevention: OFF",
+            color: .secondaryLabelColor
+        )
+        menu.addItem(status)
+
+        menu.addItem(.separator())
+
+        let enable = NSMenuItem(
+            title: "Enable Sleep Prevention",
+            action: nil,
+            keyEquivalent: ""
+        )
+        enable.isEnabled = false
+        menu.addItem(enable)
+
+        let submenu = NSMenu()
+        submenu.autoenablesItems = false
+
+        for option in SleepManager.DurationOption.presets {
+            let item = NSMenuItem(
+                title: option.title,
+                action: #selector(enableWithDuration(_:)),
+                keyEquivalent: ""
+            )
+            item.target = self
+            item.representedObject = option.seconds
+            if option.seconds == sleepManager.defaultDuration {
+                item.state = .on
+            }
+            submenu.addItem(item)
+        }
+
+        submenu.addItem(.separator())
+
+        let indefinite = NSMenuItem(
+            title: SleepManager.DurationOption.indefinite.title,
+            action: #selector(enableIndefinite),
+            keyEquivalent: ""
+        )
+        indefinite.target = self
+        if sleepManager.defaultDuration == nil {
+            indefinite.state = .on
+        }
+        submenu.addItem(indefinite)
+
+        enable.submenu = submenu
+        menu.setSubmenu(submenu, for: enable)
+
+        menu.addItem(.separator())
+
+        let settings = NSMenuItem(title: "Settings\u{2026}", action: #selector(openSettings), keyEquivalent: ",")
+        settings.target = self
+        menu.addItem(settings)
+
+        menu.addItem(.separator())
+
+        let version = appVersionString()
+        let about = NSMenuItem(title: "About Insomniac \(version)", action: #selector(showAbout), keyEquivalent: "")
+        about.target = self
+        menu.addItem(about)
+
+        menu.addItem(.separator())
+
+        menu.addItem(NSMenuItem(title: "Quit Insomniac", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+    }
+
+    private func addActiveStateMenu(to menu: NSMenu) {
+        let statusText: String
+        if let remaining = sleepManager.formatRemainingTime() {
+            statusText = "Sleep Prevention: ON \u{00B7} \(remaining) left"
+        } else {
+            statusText = "Sleep Prevention: ON"
+        }
+
+        let status = NSMenuItem(title: statusText, action: nil, keyEquivalent: "")
+        status.isEnabled = false
+        status.attributedTitle = styledTitle(statusText, color: .systemOrange)
+        menu.addItem(status)
+
+        menu.addItem(.separator())
+
+        let disable = NSMenuItem(
+            title: "Disable Sleep Prevention",
+            action: #selector(disableSleepAction),
+            keyEquivalent: "t"
+        )
+        disable.target = self
+        menu.addItem(disable)
+
+        menu.addItem(.separator())
+
+        let settings = NSMenuItem(title: "Settings\u{2026}", action: #selector(openSettings), keyEquivalent: ",")
+        settings.target = self
+        menu.addItem(settings)
+
+        menu.addItem(.separator())
+
+        let version = appVersionString()
+        let about = NSMenuItem(title: "About Insomniac \(version)", action: #selector(showAbout), keyEquivalent: "")
+        about.target = self
+        menu.addItem(about)
+
+        menu.addItem(.separator())
+
+        menu.addItem(NSMenuItem(title: "Quit Insomniac", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+    }
+
+    private func styledTitle(_ text: String, color: NSColor) -> NSAttributedString {
+        NSAttributedString(string: text, attributes: [
+            .font: NSFont.menuFont(ofSize: 13),
+            .foregroundColor: color
+        ])
+    }
+
+    private func appVersionString() -> String {
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
+        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"
+        return "v\(version) (\(build))"
+    }
+
     // MARK: - Actions
 
-    @objc private func toggleSleep() {
-        sleepManager.toggleSleep()
+    @objc private func enableWithDuration(_ sender: NSMenuItem) {
+        guard let seconds = sender.representedObject as? TimeInterval else { return }
+        sleepManager.enableSleep(duration: seconds)
     }
 
-    @objc private func setDuration(_ sender: NSMenuItem) {
-        let duration = TimeInterval(sender.tag)
-        sleepManager.startSleepDisableTimer(duration)
-        sleepManager.toggleSleep()
+    @objc private func enableIndefinite() {
+        sleepManager.enableSleep(duration: nil)
     }
 
-    @objc private func setDurationUntilQuit() {
-        sleepManager.toggleSleep()
-    }
-
-    @objc private func cancelTimer() {
-        sleepManager.cancelTimer()
-    }
-
-    @objc private func toggleAutoDeactivate() {
-        sleepManager.autoDeactivateOnSleep.toggle()
+    @objc private func disableSleepAction() {
+        sleepManager.disableSleep()
     }
 
     @objc private func openSettings() {
@@ -241,7 +278,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let window = NSWindow(contentViewController: hostingController)
         window.title = "Insomniac Settings"
         window.styleMask = [.titled, .closable]
-        window.setContentSize(NSSize(width: 380, height: 220))
+        window.setContentSize(NSSize(width: 420, height: 320))
         window.center()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -275,13 +312,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.informativeText = """
             Insomniac keeps your Mac awake even when the lid is closed.
 
-            How it works:
+            How to use it:
             \u{2022} Left-click the menu bar icon to toggle sleep prevention
-            \u{2022} Right-click for options and settings
+            \u{2022} Right-click to pick a duration and access settings
             \u{2022} Use \u{2318}\u{2325}I to toggle from anywhere
-            \u{2022} Set a duration so sleep prevention turns off automatically
 
-            On first use, macOS will ask for your password to configure \
+            On first toggle, macOS will ask for your password to configure \
             sleep settings. This only happens once.
             """
         alert.icon = NSImage(systemSymbolName: "moon.zzz.fill", accessibilityDescription: nil)
