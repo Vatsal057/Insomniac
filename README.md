@@ -60,8 +60,8 @@ All `pmset` calls run asynchronously on background threads. The UI stays respons
 
 | Icon | State |
 |------|-------|
-| ⚡ (bolt) | Sleep prevention is **ON** |
-| 🌙 (moon) | Sleep prevention is **OFF** |
+| 👁 `eye.fill` | Sleep prevention is **ON** — wide awake |
+| 🚫👁 `eye.slash.fill` | Sleep prevention is **OFF** — resting |
 
 - **Left-click** — toggle sleep prevention
 - **Right-click** (or Ctrl+click) — open context menu
