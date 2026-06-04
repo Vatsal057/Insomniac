@@ -22,11 +22,18 @@ final class SleepManager {
 
     nonisolated private let rootDomain: io_service_t
     private var _hasSudoPermissions: Bool?
+    private var isToggling = false
+
+    let autoDeactivateKey = "autoDeactivateOnSleep"
+    var autoDeactivateOnSleep: Bool {
+        get { UserDefaults.standard.bool(forKey: autoDeactivateKey) }
+        set { UserDefaults.standard.set(newValue, forKey: autoDeactivateKey) }
+    }
 
     // IOKit lid-close notification
     private var notifyPort: IONotificationPortRef?
     private var lidNotification: io_object_t = 0
-    private var dimTask: Task<Void, Never>?
+    private var dimTask: Task<Void, any Error>?
 
     private let batteryKey = "originalDisplaySleepBattery"
     private let acKey = "originalDisplaySleepAC"
@@ -34,15 +41,14 @@ final class SleepManager {
     private var originalDisplaySleepAC: Int?
 
     private init() {
-        // Cache IOPMrootDomain
         self.rootDomain = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("IOPMrootDomain"))
 
         originalDisplaySleepBattery = UserDefaults.standard.object(forKey: batteryKey) as? Int
         originalDisplaySleepAC = UserDefaults.standard.object(forKey: acKey) as? Int
 
         setupTerminationObserver()
+        setupSleepNotificationObserver()
 
-        // Initial status check
         checkStatus()
     }
 
@@ -67,6 +73,19 @@ final class SleepManager {
         }
     }
 
+    private func setupSleepNotificationObserver() {
+        NotificationCenter.default.addObserver(
+            forName: NSWorkspace.willSleepNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, self.autoDeactivateOnSleep, self.isSleepDisabled else { return }
+                await self.setSleepDisabled(false)
+            }
+        }
+    }
+
     // MARK: - Lid monitor via IOKit notifications
 
     private func startLidMonitor() {
@@ -79,13 +98,13 @@ final class SleepManager {
 
         guard rootDomain != 0 else { return }
 
-        let selfPtr = Unmanaged.passRetained(self).toOpaque()
+        let selfPtr = Unmanaged.passUnretained(self).toOpaque()
 
         let kr = IOServiceAddInterestNotification(
             port,
             rootDomain,
             kIOGeneralInterest,
-            { refcon, _, messageType, _ in
+            { refcon, _, _, _ in
                 guard let refcon else { return }
                 let manager = Unmanaged<SleepManager>.fromOpaque(refcon).takeUnretainedValue()
                 Task { @MainActor in
@@ -100,7 +119,6 @@ final class SleepManager {
             logger.error("IOServiceAddInterestNotification failed: \(kr)")
             IONotificationPortDestroy(port)
             notifyPort = nil
-            Unmanaged<SleepManager>.fromOpaque(selfPtr).release()
         }
     }
 
@@ -124,9 +142,10 @@ final class SleepManager {
 
         if DisplayManager.shared.isLidClosed() {
             dimTask = Task {
-                try? await Task.sleep(nanoseconds: 5 * 1_000_000_000)
-                guard !Task.isCancelled else { return }
-                DisplayManager.shared.dimScreen()
+                do {
+                    try await Task.sleep(nanoseconds: 5 * 1_000_000_000)
+                    DisplayManager.shared.dimScreen()
+                } catch is CancellationError {}
             }
         } else {
             DisplayManager.shared.restoreScreen()
@@ -136,8 +155,11 @@ final class SleepManager {
     // MARK: - Toggle
 
     func toggleSleep() {
+        guard !isToggling else { return }
+        isToggling = true
         Task {
             await setSleepDisabled(!isSleepDisabled)
+            isToggling = false
         }
     }
 
@@ -155,7 +177,6 @@ final class SleepManager {
             self.isSleepDisabled = property.boolValue
             logger.debug("Current sleep disabled status: \(self.isSleepDisabled)")
         } else {
-            // Fallback to pmset if property is missing (rare)
             Task {
                 await checkStatusViaPmset()
             }
@@ -187,7 +208,7 @@ final class SleepManager {
         }
     }
 
-    // MARK: - pmset helpers (Now Asynchronous)
+    // MARK: - pmset helpers
 
     private func getDisplaySleepValues() async -> (battery: Int?, ac: Int?) {
         await Task.detached(priority: .userInitiated) {
@@ -232,16 +253,23 @@ final class SleepManager {
         if let ac     { await runSudoPmset(args: ["-c", "displaysleep", String(ac)]) }
     }
 
-    private func runSudoPmset(args: [String]) async {
-        await Task.detached(priority: .userInitiated) {
+    @discardableResult
+    private func runSudoPmset(args: [String]) async -> Bool {
+        let success = await Task.detached(priority: .userInitiated) {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
             process.arguments = ["/usr/bin/pmset"] + args
             do {
                 try process.run()
                 process.waitUntilExit()
-            } catch {}
+                return process.terminationStatus == 0
+            } catch { return false }
         }.value
+
+        if !success {
+            _hasSudoPermissions = nil
+        }
+        return success
     }
 
     private func hasPermissions() async -> Bool {
@@ -258,7 +286,7 @@ final class SleepManager {
             } catch { return false }
         }.value
 
-        if result { _hasSudoPermissions = true }
+        _hasSudoPermissions = result
         return result
     }
 
@@ -289,7 +317,6 @@ final class SleepManager {
             _hasSudoPermissions = true
         }
 
-        // Optimization: Update state first for UI responsiveness
         isSleepDisabled = disabled
 
         if disabled {

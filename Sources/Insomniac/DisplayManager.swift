@@ -8,6 +8,7 @@ func DisplayServicesSetBrightness(_ display: CGDirectDisplayID, _ brightness: Fl
 @_silgen_name("DisplayServicesGetBrightness")
 func DisplayServicesGetBrightness(_ display: CGDirectDisplayID, _ brightness: UnsafeMutablePointer<Float>) -> Int32
 
+@MainActor
 class DisplayManager {
     static let shared = DisplayManager()
 
@@ -16,7 +17,6 @@ class DisplayManager {
     private var isCurrentlyDimmed = false
 
     private init() {
-        // Cache the IOPMrootDomain service for the lifetime of the app
         rootDomain = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("IOPMrootDomain"))
     }
 
