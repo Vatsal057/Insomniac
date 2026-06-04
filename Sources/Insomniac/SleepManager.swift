@@ -364,7 +364,7 @@ final class SleepManager {
                 originalDisplaySleepAC = ac
                 UserDefaults.standard.set(ac, forKey: acKey)
             }
-            await runSudoPmset(args: ["-a", "displaysleep", "0"])
+            await runSudoPmset(args: ["-a", "displaysleep", "2"])
         } else {
             await setDisplaySleep(battery: originalDisplaySleepBattery, ac: originalDisplaySleepAC)
             originalDisplaySleepBattery = nil
