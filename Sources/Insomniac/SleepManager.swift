@@ -34,6 +34,11 @@ final class SleepManager {
     private let firstLaunchKey = "hasLaunchedBefore"
     var isFirstLaunch: Bool { !UserDefaults.standard.bool(forKey: firstLaunchKey) }
 
+    // Timer
+    private var sleepDisableTimer: Timer?
+    private(set) var sleepDisableDeadline: Date?
+    private(set) var remainingTime: TimeInterval = 0
+
     private var notifyPort: IONotificationPortRef?
     private var lidNotification: io_object_t = 0
     private var dimTask: Task<Void, any Error>?
@@ -101,7 +106,7 @@ final class SleepManager {
         UNUserNotificationCenter.current().requestAuthorization(options: .alert) { _, _ in }
     }
 
-    private func sendNotification(title: String, body: String) {
+    func sendNotification(title: String, body: String) {
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
@@ -115,7 +120,56 @@ final class SleepManager {
         UNUserNotificationCenter.current().add(request)
     }
 
-    // MARK: - Lid monitor via IOKit notifications
+    // MARK: - Timer
+
+    func startSleepDisableTimer(_ duration: TimeInterval) {
+        cancelTimer()
+
+        guard duration > 0 else { return }
+
+        sleepDisableDeadline = Date().addingTimeInterval(duration)
+        remainingTime = duration
+
+        sleepDisableTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, let deadline = self.sleepDisableDeadline else { return }
+                let remaining = deadline.timeIntervalSinceNow
+
+                if remaining <= 0 {
+                    self.cancelTimer()
+                    await self.setSleepDisabled(false)
+                    self.sendNotification(
+                        title: "Sleep Prevention Ended",
+                        body: "Your timer has expired. Sleep is now re-enabled."
+                    )
+                } else {
+                    self.remainingTime = remaining
+                }
+            }
+        }
+    }
+
+    func cancelTimer() {
+        sleepDisableTimer?.invalidate()
+        sleepDisableTimer = nil
+        sleepDisableDeadline = nil
+        remainingTime = 0
+    }
+
+    func formatTime(_ interval: TimeInterval) -> String {
+        let totalSeconds = max(0, Int(interval))
+        let hours = totalSeconds / 3600
+        let minutes = (totalSeconds % 3600) / 60
+        let seconds = totalSeconds % 60
+
+        if hours > 0 {
+            return "\(hours)h \(minutes)m"
+        } else {
+            return "\(minutes)m \(seconds)s"
+        }
+    }
+
+    // MARK: - Lid monitor
 
     private func startLidMonitor() {
         stopLidMonitor()
@@ -190,12 +244,6 @@ final class SleepManager {
             let newState = !isSleepDisabled
             await setSleepDisabled(newState)
             isToggling = false
-
-            let title = newState ? "Sleep Prevention Enabled" : "Sleep Prevention Disabled"
-            let body = newState
-                ? "Your Mac will stay awake even with the lid closed."
-                : "Your Mac can now sleep normally."
-            sendNotification(title: title, body: body)
         }
     }
 
@@ -366,6 +414,7 @@ final class SleepManager {
             }
             await runSudoPmset(args: ["-a", "displaysleep", "0"])
         } else {
+            cancelTimer()
             await setDisplaySleep(battery: originalDisplaySleepBattery, ac: originalDisplaySleepAC)
             originalDisplaySleepBattery = nil
             originalDisplaySleepAC = nil
