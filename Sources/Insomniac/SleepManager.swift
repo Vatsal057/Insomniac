@@ -2,6 +2,7 @@ import Foundation
 import OSLog
 import AppKit
 import IOKit
+import UserNotifications
 
 @Observable @MainActor
 final class SleepManager {
@@ -30,7 +31,9 @@ final class SleepManager {
         set { UserDefaults.standard.set(newValue, forKey: autoDeactivateKey) }
     }
 
-    // IOKit lid-close notification
+    private let firstLaunchKey = "hasLaunchedBefore"
+    var isFirstLaunch: Bool { !UserDefaults.standard.bool(forKey: firstLaunchKey) }
+
     private var notifyPort: IONotificationPortRef?
     private var lidNotification: io_object_t = 0
     private var dimTask: Task<Void, any Error>?
@@ -58,6 +61,12 @@ final class SleepManager {
         }
     }
 
+    func markFirstLaunchComplete() {
+        UserDefaults.standard.set(true, forKey: firstLaunchKey)
+    }
+
+    // MARK: - Observers
+
     private func setupTerminationObserver() {
         NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification,
@@ -84,6 +93,26 @@ final class SleepManager {
                 await self.setSleepDisabled(false)
             }
         }
+    }
+
+    // MARK: - Notifications
+
+    func requestNotificationPermission() {
+        UNUserNotificationCenter.current().requestAuthorization(options: .alert) { _, _ in }
+    }
+
+    private func sendNotification(title: String, body: String) {
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.sound = nil
+
+        let request = UNNotificationRequest(
+            identifier: UUID().uuidString,
+            content: content,
+            trigger: nil
+        )
+        UNUserNotificationCenter.current().add(request)
     }
 
     // MARK: - Lid monitor via IOKit notifications
@@ -158,12 +187,19 @@ final class SleepManager {
         guard !isToggling else { return }
         isToggling = true
         Task {
-            await setSleepDisabled(!isSleepDisabled)
+            let newState = !isSleepDisabled
+            await setSleepDisabled(newState)
             isToggling = false
+
+            let title = newState ? "Sleep Prevention Enabled" : "Sleep Prevention Disabled"
+            let body = newState
+                ? "Your Mac will stay awake even with the lid closed."
+                : "Your Mac can now sleep normally."
+            sendNotification(title: title, body: body)
         }
     }
 
-    // MARK: - Status check (Fast, reads from IORegistry)
+    // MARK: - Status check
 
     func checkStatus() {
         guard rootDomain != 0 else { return }
@@ -175,7 +211,6 @@ final class SleepManager {
             0
         )?.takeRetainedValue() as? NSNumber {
             self.isSleepDisabled = property.boolValue
-            logger.debug("Current sleep disabled status: \(self.isSleepDisabled)")
         } else {
             Task {
                 await checkStatusViaPmset()
@@ -306,7 +341,7 @@ final class SleepManager {
         }.value
     }
 
-    private func setSleepDisabled(_ disabled: Bool) async {
+    func setSleepDisabled(_ disabled: Bool) async {
         let hasPerms = await hasPermissions()
         if !hasPerms {
             let requested = await requestPermissions()

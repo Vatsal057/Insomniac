@@ -24,9 +24,20 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+
+            Section {
+                let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
+                let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"
+                HStack {
+                    Text("Version")
+                    Spacer()
+                    Text("\(version) (\(build))")
+                        .foregroundStyle(.secondary)
+                }
+            }
         }
         .padding(20)
-        .frame(width: 350)
+        .frame(width: 380)
         .onAppear {
             launchAtLogin = SMAppService.mainApp.status == .enabled
         }
