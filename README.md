@@ -14,14 +14,33 @@ You choose how long to keep it on — indefinitely, for 30 minutes, or for a few
 
 ## Features
 
+### Core
 - **One-click toggle** — left-click the menu bar icon to enable/disable
 - **Timed duration** — pick 30 minutes, 1, 3, or 8 hours; auto-reverts when the timer expires
+- **Menu-bar timer** — monospaced remaining time next to the icon, updates every 30s
 - **Global keyboard shortcut** — `⌘⌥I` by default, customizable in Settings
 - **Lid-close support** — screen dims automatically, system stays awake
-- **Auto-deactivate** — optionally re-enable sleep when the Mac goes to sleep normally
 - **Launch at login** — start automatically on login
 - **No dock icon** — lives entirely in the menu bar
 - **Automatic cleanup** — sleep settings are restored on quit
+
+### Modes
+- **While charging only** — automatically disable sleep prevention on battery
+- **Caffeinate mode** — use `caffeinate` instead of `pmset` (no `sudo` required)
+
+### Triggers
+- **Watched apps** — auto-enable when a specific app launches, auto-disable when it quits
+- **Schedule** — pick days of the week and a time window; auto-enable and auto-disable on the schedule
+- **Activity-based** — keep the Mac awake when CPU usage exceeds a threshold or the system has been active recently, and let it sleep when idle
+- **Specific networks** — auto-enable only when connected to a user-configured SSID
+
+### Power events
+- **Dim on battery only** — skip dimming the screen on lid close when connected to AC
+- **Skip dim on external display** — don't dim the built-in display if an external monitor is attached
+
+### System
+- **URL scheme** — control Insomniac from any scripting context: `insomniac://toggle`, `enable`, `disable`, `status` (with optional `?duration=N`)
+- **Export / import settings** — back up and restore your entire config as a `.plist`
 
 ## Requirements
 
@@ -106,22 +125,56 @@ Quit Insomniac
 
 Accessible from the context menu or with `⌘,`.
 
-| Setting | What it does |
-|---------|-------------|
-| Launch at login | Register Insomniac as a login item |
-| Auto-deactivate when device sleeps | Re-enable sleep when the Mac sleeps normally |
-| Default duration | How long sleep prevention stays on when you toggle via the icon or shortcut |
-| Toggle shortcut | Record a custom global hotkey |
+| Section | Setting | What it does |
+|---------|---------|-------------|
+| **General** | Launch at login | Register Insomniac as a login item |
+| **General** | Use caffeinate mode | Use `caffeinate` instead of `pmset` (skips the `sudo` prompt) |
+| **General** | Only while on AC power | Auto-disable on battery |
+| **General** | Keyboard shortcut | Record a custom global hotkey |
+| **Schedule** | Days of week + time window | Auto-enable on the schedule, auto-disable outside it |
+| **Triggers** | Watched apps | Auto-enable when a specific app launches |
+| **Activity** | Keep awake when active | Keep awake while CPU > threshold or system is active |
+| **Network** | Keep awake on selected Wi-Fi networks | Only auto-enable on the configured SSIDs |
+| **Power Events** | Dim screen only on battery | Skip dimming on lid close when on AC power |
+| **Power Events** | Skip dim on external display | Don't dim the built-in display if an external monitor is attached |
+| **Default Duration** | 30m / 1h / 3h / 8h / Indefinite | Default toggle duration |
+| **About** | Export / Import | Back up or restore all settings as a `.plist` |
+
+## URL scheme
+
+Insomniac registers the `insomniac://` URL scheme. Use it from Terminal, AppleScript, or any other app:
+
+```bash
+open "insomniac://toggle"           # toggle on/off
+open "insomniac://enable"           # enable indefinitely
+open "insomniac://enable?duration=3600"  # enable for 1 hour
+open "insomniac://disable"          # disable
+open "insomniac://status"           # print current state
+```
+
+AppleScript example:
+
+```applescript
+tell application "System Events"
+    set statusURL to "insomniac://status"
+end tell
+open location statusURL
+```
 
 ## How it works
 
 | Component | Mechanism |
 |-----------|-----------|
-| Sleep prevention | `sudo pmset -a disablesleep 1` |
+| Sleep prevention | `sudo pmset -a disablesleep 1` (or `caffeinate -di` in caffeinate mode) |
 | Status check | `IORegistryEntryCreateCFProperty` on `IOPMrootDomain` |
 | Lid detection | `IOServiceAddInterestNotification` on `IOPMrootDomain` |
 | Screen dimming | Private `DisplayServices` framework |
-| Permissions | One-time `sudoers.d` entry via AppleScript |
+| Power source | `IOPSCopyPowerSourcesInfo` + `IOPSNotificationCreateRunLoopSource` |
+| App watching | `NSWorkspace.didLaunchApplicationNotification` |
+| Network / SSID | `networksetup -getairportnetwork` polled via `NWPathMonitor` |
+| CPU usage | `host_processor_info` (`PROCESSOR_CPU_LOAD_INFO`) |
+| User idle | `CGEventSource.secondsSinceLastEventType` |
+| Permissions | One-time `sudoers.d` entry via AppleScript (skipped in caffeinate mode) |
 | Duration timer | In-process `Task` with cancellable sleep |
 
 All `pmset` calls run asynchronously on background threads. The UI stays responsive and the main thread is never blocked.
