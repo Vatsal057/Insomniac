@@ -9,6 +9,12 @@ struct SettingsView: View {
     @State private var requireCharging = SleepManager.shared.requireCharging
     @State private var defaultDuration: SleepManager.DurationOption = currentDefaultOption()
     @State private var watchedApps: [WatchedApp] = []
+    @State private var scheduleEnabled = SleepManager.shared.scheduleEnabled
+    @State private var scheduleStartHour = SleepManager.shared.scheduleStartHour
+    @State private var scheduleStartMinute = SleepManager.shared.scheduleStartMinute
+    @State private var scheduleEndHour = SleepManager.shared.scheduleEndHour
+    @State private var scheduleEndMinute = SleepManager.shared.scheduleEndMinute
+    @State private var scheduleDays = SleepManager.shared.scheduleDays
 
     struct WatchedApp {
         let bundleID: String
@@ -47,6 +53,71 @@ struct SettingsView: View {
                 Text("Sleep prevention will be disabled automatically if you unplug your Mac.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+
+            Section("Schedule") {
+                Toggle("Enable on schedule", isOn: $scheduleEnabled)
+                    .onChange(of: scheduleEnabled) { _, newValue in
+                        SleepManager.shared.scheduleEnabled = newValue
+                    }
+
+                if scheduleEnabled {
+                    HStack {
+                        Text("From")
+                        DatePicker(
+                            "",
+                            selection: Binding(
+                                get: { TimeUtils.dateFrom(hour: scheduleStartHour, minute: scheduleStartMinute) },
+                                set: { newDate in
+                                    let comps = Calendar.current.dateComponents([.hour, .minute], from: newDate)
+                                    scheduleStartHour = comps.hour ?? 9
+                                    scheduleStartMinute = comps.minute ?? 0
+                                    SleepManager.shared.scheduleStartHour = scheduleStartHour
+                                    SleepManager.shared.scheduleStartMinute = scheduleStartMinute
+                                }
+                            ),
+                            displayedComponents: .hourAndMinute
+                        )
+                        .labelsHidden()
+                        Text("to")
+                        DatePicker(
+                            "",
+                            selection: Binding(
+                                get: { TimeUtils.dateFrom(hour: scheduleEndHour, minute: scheduleEndMinute) },
+                                set: { newDate in
+                                    let comps = Calendar.current.dateComponents([.hour, .minute], from: newDate)
+                                    scheduleEndHour = comps.hour ?? 17
+                                    scheduleEndMinute = comps.minute ?? 0
+                                    SleepManager.shared.scheduleEndHour = scheduleEndHour
+                                    SleepManager.shared.scheduleEndMinute = scheduleEndMinute
+                                }
+                            ),
+                            displayedComponents: .hourAndMinute
+                        )
+                        .labelsHidden()
+                    }
+
+                    Text("Days")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    HStack(spacing: 4) {
+                        ForEach(1...7, id: \.self) { weekday in
+                            let dayIndex = weekday - 1  // 0=Sun, 1=Mon, ..., 6=Sat
+                            DayToggle(
+                                label: TimeUtils.dayLabel(dayIndex),
+                                weekday: weekday,
+                                isOn: scheduleDays.contains(weekday)
+                            ) { isOn in
+                                if isOn {
+                                    scheduleDays.insert(weekday)
+                                } else {
+                                    scheduleDays.remove(weekday)
+                                }
+                                SleepManager.shared.scheduleDays = scheduleDays
+                            }
+                        }
+                    }
+                }
             }
 
             Section("Triggers") {
@@ -198,6 +269,41 @@ struct SettingsView: View {
             return match
         }
         return .indefinite
+    }
+}
+
+struct DayToggle: View {
+    let label: String
+    let weekday: Int
+    let isOn: Bool
+    let onToggle: (Bool) -> Void
+
+    var body: some View {
+        Button {
+            onToggle(!isOn)
+        } label: {
+            Text(label)
+                .font(.caption)
+                .frame(width: 28, height: 22)
+                .background(isOn ? Color.accentColor : Color.gray.opacity(0.2))
+                .foregroundColor(isOn ? .white : .primary)
+                .cornerRadius(4)
+        }
+        .buttonStyle(.borderless)
+    }
+}
+
+enum TimeUtils {
+    static func dateFrom(hour: Int, minute: Int) -> Date {
+        var components = DateComponents()
+        components.hour = hour
+        components.minute = minute
+        return Calendar.current.date(from: components) ?? Date()
+    }
+
+    static func dayLabel(_ index: Int) -> String {
+        // 0=Sun, 1=Mon, ..., 6=Sat
+        ["S", "M", "T", "W", "T", "F", "S"][index]
     }
 }
 

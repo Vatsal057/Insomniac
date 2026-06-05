@@ -89,6 +89,36 @@ final class SleepManager {
         set { UserDefaults.standard.set(newValue, forKey: watchedAppsKey) }
     }
 
+    // Schedule
+    let scheduleEnabledKey = "scheduleEnabled"
+    var scheduleEnabled: Bool {
+        get { UserDefaults.standard.bool(forKey: scheduleEnabledKey) }
+        set { UserDefaults.standard.set(newValue, forKey: scheduleEnabledKey) }
+    }
+    var scheduleStartHour: Int {
+        get { UserDefaults.standard.object(forKey: "scheduleStartHour") as? Int ?? 9 }
+        set { UserDefaults.standard.set(newValue, forKey: "scheduleStartHour") }
+    }
+    var scheduleStartMinute: Int {
+        get { UserDefaults.standard.object(forKey: "scheduleStartMinute") as? Int ?? 0 }
+        set { UserDefaults.standard.set(newValue, forKey: "scheduleStartMinute") }
+    }
+    var scheduleEndHour: Int {
+        get { UserDefaults.standard.object(forKey: "scheduleEndHour") as? Int ?? 17 }
+        set { UserDefaults.standard.set(newValue, forKey: "scheduleEndHour") }
+    }
+    var scheduleEndMinute: Int {
+        get { UserDefaults.standard.object(forKey: "scheduleEndMinute") as? Int ?? 0 }
+        set { UserDefaults.standard.set(newValue, forKey: "scheduleEndMinute") }
+    }
+    var scheduleDays: Set<Int> {
+        get {
+            let stored = UserDefaults.standard.array(forKey: "scheduleDays") as? [Int] ?? []
+            return Set(stored)
+        }
+        set { UserDefaults.standard.set(Array(newValue), forKey: "scheduleDays") }
+    }
+
     private var caffeinateProcess: Process?
 
     private let firstLaunchKey = "hasLaunchedBefore"
@@ -113,6 +143,7 @@ final class SleepManager {
         setupSleepNotificationObserver()
         setupPowerMonitor()
         setupAppMonitor()
+        startSchedule()
 
         checkStatus()
     }
@@ -129,6 +160,69 @@ final class SleepManager {
 
     func updateWatchedApps() {
         AppMonitor.shared.updateWatchedBundleIDs(Set(watchedAppBundleIDs))
+    }
+
+    // MARK: - Schedule
+
+    private var scheduleTimer: Timer?
+    private var wasInScheduledWindow = false
+
+    func startSchedule() {
+        scheduleTimer?.invalidate()
+        wasInScheduledWindow = isInScheduledWindow()
+        scheduleTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                self?.checkSchedule()
+            }
+        }
+        checkSchedule()
+    }
+
+    private func checkSchedule() {
+        guard scheduleEnabled else { return }
+        let inWindow = isInScheduledWindow()
+        if inWindow && !wasInScheduledWindow && !isSleepDisabled && !isToggling {
+            sleepDisabledUntil = nil
+            durationTask = nil
+            Task {
+                await setSleepDisabled(true)
+                sendNotification(
+                    title: "Sleep Prevention Enabled",
+                    body: "Scheduled window started."
+                )
+            }
+        } else if !inWindow && wasInScheduledWindow && isSleepDisabled {
+            sleepDisabledUntil = nil
+            durationTask = nil
+            Task {
+                await setSleepDisabled(false)
+                sendNotification(
+                    title: "Sleep Prevention Disabled",
+                    body: "Scheduled window ended."
+                )
+            }
+        }
+        wasInScheduledWindow = inWindow
+    }
+
+    private func isInScheduledWindow() -> Bool {
+        let now = Date()
+        let calendar = Calendar.current
+        let weekday = calendar.component(.weekday, from: now)
+        guard scheduleDays.contains(weekday) else { return false }
+
+        let hour = calendar.component(.hour, from: now)
+        let minute = calendar.component(.minute, from: now)
+        let nowMinutes = hour * 60 + minute
+        let startMinutes = scheduleStartHour * 60 + scheduleStartMinute
+        let endMinutes = scheduleEndHour * 60 + scheduleEndMinute
+
+        if startMinutes <= endMinutes {
+            return nowMinutes >= startMinutes && nowMinutes < endMinutes
+        } else {
+            // Window crosses midnight
+            return nowMinutes >= startMinutes || nowMinutes < endMinutes
+        }
     }
 
     // MARK: - Observers
