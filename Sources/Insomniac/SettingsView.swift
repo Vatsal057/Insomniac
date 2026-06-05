@@ -15,6 +15,9 @@ struct SettingsView: View {
     @State private var scheduleEndHour = SleepManager.shared.scheduleEndHour
     @State private var scheduleEndMinute = SleepManager.shared.scheduleEndMinute
     @State private var scheduleDays = SleepManager.shared.scheduleDays
+    @State private var activityBasedEnabled = SleepManager.shared.activityBasedEnabled
+    @State private var activityThresholdPercent = SleepManager.shared.activityThresholdPercent
+    @State private var activityIdleTimeout = SleepManager.shared.activityIdleTimeoutSeconds
 
     struct WatchedApp {
         let bundleID: String
@@ -151,6 +154,45 @@ struct SettingsView: View {
                 }
             }
 
+            Section("Activity-Based") {
+                Toggle("Keep awake when active", isOn: $activityBasedEnabled)
+                    .onChange(of: activityBasedEnabled) { _, newValue in
+                        SleepManager.shared.activityBasedEnabled = newValue
+                        SleepManager.shared.startActivityMonitor()
+                    }
+
+                if activityBasedEnabled {
+                    HStack {
+                        Text("CPU threshold")
+                        Slider(value: Binding(
+                            get: { Double(activityThresholdPercent) },
+                            set: { activityThresholdPercent = Int($0); SleepManager.shared.activityThresholdPercent = activityThresholdPercent }
+                        ), in: 5...95, step: 5)
+                        Text("\(activityThresholdPercent)%")
+                            .frame(width: 40)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    HStack {
+                        Text("Idle timeout")
+                        Picker("", selection: $activityIdleTimeout) {
+                            Text("30 sec").tag(30)
+                            Text("1 min").tag(60)
+                            Text("2 min").tag(120)
+                            Text("5 min").tag(300)
+                        }
+                        .labelsHidden()
+                        .frame(width: 100)
+                        .onChange(of: activityIdleTimeout) { _, newValue in
+                            SleepManager.shared.activityIdleTimeoutSeconds = newValue
+                        }
+                    }
+                }
+                Text("Insomniac will keep your Mac awake when CPU usage exceeds the threshold or the system has been active recently, and let it sleep when idle.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Default Duration") {
                 Picker("When enabling via shortcut", selection: $defaultDuration) {
                     Text("Indefinitely").tag(SleepManager.DurationOption.indefinite)
@@ -199,6 +241,9 @@ struct SettingsView: View {
             requireCharging = SleepManager.shared.requireCharging
             defaultDuration = Self.currentDefaultOption()
             loadWatchedApps()
+            activityBasedEnabled = SleepManager.shared.activityBasedEnabled
+            activityThresholdPercent = SleepManager.shared.activityThresholdPercent
+            activityIdleTimeout = SleepManager.shared.activityIdleTimeoutSeconds
         }
     }
 

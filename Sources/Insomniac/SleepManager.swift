@@ -119,6 +119,21 @@ final class SleepManager {
         set { UserDefaults.standard.set(Array(newValue), forKey: "scheduleDays") }
     }
 
+    // Activity-based
+    let activityBasedEnabledKey = "activityBasedEnabled"
+    var activityBasedEnabled: Bool {
+        get { UserDefaults.standard.bool(forKey: activityBasedEnabledKey) }
+        set { UserDefaults.standard.set(newValue, forKey: activityBasedEnabledKey) }
+    }
+    var activityThresholdPercent: Int {
+        get { (UserDefaults.standard.object(forKey: "activityThresholdPercent") as? Int) ?? 25 }
+        set { UserDefaults.standard.set(newValue, forKey: "activityThresholdPercent") }
+    }
+    var activityIdleTimeoutSeconds: Int {
+        get { (UserDefaults.standard.object(forKey: "activityIdleTimeoutSeconds") as? Int) ?? 60 }
+        set { UserDefaults.standard.set(newValue, forKey: "activityIdleTimeoutSeconds") }
+    }
+
     private var caffeinateProcess: Process?
 
     private let firstLaunchKey = "hasLaunchedBefore"
@@ -144,6 +159,7 @@ final class SleepManager {
         setupPowerMonitor()
         setupAppMonitor()
         startSchedule()
+        startActivityMonitor()
 
         checkStatus()
     }
@@ -222,6 +238,56 @@ final class SleepManager {
         } else {
             // Window crosses midnight
             return nowMinutes >= startMinutes || nowMinutes < endMinutes
+        }
+    }
+
+    // MARK: - Activity monitor
+
+    private var activityTimer: Timer?
+
+    func startActivityMonitor() {
+        activityTimer?.invalidate()
+        guard activityBasedEnabled else { return }
+
+        activityTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                self?.checkActivity()
+            }
+        }
+        checkActivity()
+    }
+
+    private func checkActivity() {
+        guard activityBasedEnabled, !isToggling else { return }
+
+        let cpu = ActivityMonitor.shared.cpuUsagePercent
+        let idle = ActivityMonitor.shared.systemIdleTime
+        let threshold = Double(activityThresholdPercent)
+        let idleTimeout = TimeInterval(activityIdleTimeoutSeconds)
+
+        let isActive = cpu >= threshold || idle < idleTimeout
+
+        if isActive && !isSleepDisabled {
+            if requireCharging && !PowerMonitor.shared.isOnACPower { return }
+            sleepDisabledUntil = nil
+            durationTask = nil
+            Task {
+                await setSleepDisabled(true)
+                sendNotification(
+                    title: "Sleep Prevention Enabled",
+                    body: "Activity detected (CPU \(Int(cpu))%)."
+                )
+            }
+        } else if !isActive && isSleepDisabled {
+            sleepDisabledUntil = nil
+            durationTask = nil
+            Task {
+                await setSleepDisabled(false)
+                sendNotification(
+                    title: "Sleep Prevention Disabled",
+                    body: "System has been idle."
+                )
+            }
         }
     }
 
