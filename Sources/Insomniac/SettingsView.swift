@@ -6,6 +6,7 @@ struct SettingsView: View {
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var autoDeactivate = SleepManager.shared.autoDeactivateOnSleep
     @State private var useCaffeinate = SleepManager.shared.useCaffeinate
+    @State private var requireCharging = SleepManager.shared.requireCharging
     @State private var defaultDuration: SleepManager.DurationOption = currentDefaultOption()
 
     var body: some View {
@@ -30,6 +31,14 @@ struct SettingsView: View {
                         SleepManager.shared.useCaffeinate = newValue
                     }
                 Text("Caffeinate mode prevents idle sleep only. It does not keep your Mac awake when the lid is closed.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Toggle("Only while on AC power", isOn: $requireCharging)
+                    .onChange(of: requireCharging) { _, newValue in
+                        SleepManager.shared.requireCharging = newValue
+                    }
+                Text("Sleep prevention will be disabled automatically if you unplug your Mac.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -79,6 +88,7 @@ struct SettingsView: View {
             launchAtLogin = SMAppService.mainApp.status == .enabled
             autoDeactivate = SleepManager.shared.autoDeactivateOnSleep
             useCaffeinate = SleepManager.shared.useCaffeinate
+            requireCharging = SleepManager.shared.requireCharging
             defaultDuration = Self.currentDefaultOption()
         }
     }

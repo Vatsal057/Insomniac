@@ -77,6 +77,12 @@ final class SleepManager {
         set { UserDefaults.standard.set(newValue, forKey: useCaffeinateKey) }
     }
 
+    let requireChargingKey = "requireCharging"
+    var requireCharging: Bool {
+        get { UserDefaults.standard.bool(forKey: requireChargingKey) }
+        set { UserDefaults.standard.set(newValue, forKey: requireChargingKey) }
+    }
+
     private var caffeinateProcess: Process?
 
     private let firstLaunchKey = "hasLaunchedBefore"
@@ -99,6 +105,7 @@ final class SleepManager {
 
         setupTerminationObserver()
         setupSleepNotificationObserver()
+        setupPowerMonitor()
 
         checkStatus()
     }
@@ -127,6 +134,25 @@ final class SleepManager {
                 self.caffeinateProcess = nil
                 if self.isSleepDisabled {
                     await self.setSleepDisabled(false)
+                }
+            }
+        }
+    }
+
+    private func setupPowerMonitor() {
+        PowerMonitor.shared.start { [weak self] isOnAC in
+            Task { @MainActor in
+                guard let self, self.requireCharging, self.isSleepDisabled else { return }
+                if !isOnAC {
+                    // Unplugged — auto-deactivate
+                    self.durationTask?.cancel()
+                    self.durationTask = nil
+                    self.sleepDisabledUntil = nil
+                    await self.setSleepDisabled(false)
+                    self.sendNotification(
+                        title: "Sleep Prevention Disabled",
+                        body: "Unplugged. Battery preservation enabled."
+                    )
                 }
             }
         }
@@ -246,6 +272,15 @@ final class SleepManager {
 
     func enableSleep(duration: TimeInterval?) {
         guard !isToggling else { return }
+
+        if requireCharging && !PowerMonitor.shared.isOnACPower {
+            sendNotification(
+                title: "Cannot Enable Sleep Prevention",
+                body: "Your Mac must be plugged in (set in Settings)."
+            )
+            return
+        }
+
         isToggling = true
 
         durationTask?.cancel()
