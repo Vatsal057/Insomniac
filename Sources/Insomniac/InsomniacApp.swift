@@ -46,11 +46,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         sleepManager.requestNotificationPermission()
         observeState()
         startTooltipTimer()
+        registerAppleScriptCommands()
 
         if sleepManager.isFirstLaunch {
             showWelcomeAlert()
             sleepManager.markFirstLaunchComplete()
         }
+    }
+
+    // MARK: - URL scheme handler
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls {
+            handleURL(url)
+        }
+    }
+
+    private func handleURL(_ url: URL) {
+        guard url.scheme == "insomniac" else { return }
+
+        let host = url.host?.lowercased()
+        switch host {
+        case "toggle":
+            sleepManager.toggleSleep()
+        case "enable":
+            if let durationParam = url.queryParameter("duration") {
+                sleepManager.enableSleep(duration: TimeInterval(durationParam))
+            } else {
+                sleepManager.enableSleep(duration: nil)
+            }
+        case "disable":
+            sleepManager.disableSleep()
+        case "status":
+            break
+        default:
+            break
+        }
+    }
+
+    // MARK: - AppleScript commands
+
+    private func registerAppleScriptCommands() {
+        NSAppleEventManager.shared().setEventHandler(
+            self,
+            andSelector: #selector(handleAppleScriptCommand(_:withReplyEvent:)),
+            forEventClass: AEEventClass(kInternetEventClass),
+            andEventID: AEEventID(kAEGetURL)
+        )
+    }
+
+    @objc func handleAppleScriptCommand(_ event: NSAppleEventDescriptor, withReplyEvent reply: NSAppleEventDescriptor) {
+        guard let urlString = event.paramDescriptor(forKeyword: keyDirectObject)?.stringValue,
+              let url = URL(string: urlString) else { return }
+        handleURL(url)
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -343,5 +391,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if response == .alertSecondButtonReturn {
             NSApp.terminate(nil)
         }
+    }
+}
+
+extension URL {
+    func queryParameter(_ name: String) -> String? {
+        URLComponents(url: self, resolvingAgainstBaseURL: false)?
+            .queryItems?
+            .first(where: { $0.name == name })?
+            .value
     }
 }

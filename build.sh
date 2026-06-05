@@ -46,6 +46,17 @@ cat > Insomniac.app/Contents/Info.plist << PLIST
     <string>14.0</string>
     <key>LSUIElement</key>
     <true/>
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>com.vatsal.Insomniac.url</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>insomniac</string>
+            </array>
+        </dict>
+    </array>
 </dict>
 </plist>
 PLIST
