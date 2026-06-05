@@ -5,6 +5,7 @@ import ServiceManagement
 struct SettingsView: View {
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var autoDeactivate = SleepManager.shared.autoDeactivateOnSleep
+    @State private var useCaffeinate = SleepManager.shared.useCaffeinate
     @State private var defaultDuration: SleepManager.DurationOption = currentDefaultOption()
 
     var body: some View {
@@ -23,6 +24,14 @@ struct SettingsView: View {
                     .onChange(of: autoDeactivate) { _, newValue in
                         SleepManager.shared.autoDeactivateOnSleep = newValue
                     }
+
+                Toggle("Use caffeinate (no sudo required)", isOn: $useCaffeinate)
+                    .onChange(of: useCaffeinate) { _, newValue in
+                        SleepManager.shared.useCaffeinate = newValue
+                    }
+                Text("Caffeinate mode prevents idle sleep only. It does not keep your Mac awake when the lid is closed.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section("Default Duration") {
@@ -61,6 +70,7 @@ struct SettingsView: View {
         .onAppear {
             launchAtLogin = SMAppService.mainApp.status == .enabled
             autoDeactivate = SleepManager.shared.autoDeactivateOnSleep
+            useCaffeinate = SleepManager.shared.useCaffeinate
             defaultDuration = Self.currentDefaultOption()
         }
     }

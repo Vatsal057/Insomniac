@@ -71,6 +71,14 @@ final class SleepManager {
         }
     }
 
+    let useCaffeinateKey = "useCaffeinateMode"
+    var useCaffeinate: Bool {
+        get { UserDefaults.standard.bool(forKey: useCaffeinateKey) }
+        set { UserDefaults.standard.set(newValue, forKey: useCaffeinateKey) }
+    }
+
+    private var caffeinateProcess: Process?
+
     private let firstLaunchKey = "hasLaunchedBefore"
     var isFirstLaunch: Bool { !UserDefaults.standard.bool(forKey: firstLaunchKey) }
 
@@ -115,6 +123,8 @@ final class SleepManager {
         ) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
+                self.caffeinateProcess?.terminate()
+                self.caffeinateProcess = nil
                 if self.isSleepDisabled {
                     await self.setSleepDisabled(false)
                 }
@@ -465,6 +475,12 @@ final class SleepManager {
     }
 
     func setSleepDisabled(_ disabled: Bool) async {
+        if useCaffeinate {
+            await setSleepDisabledCaffeinate(disabled)
+            isSleepDisabled = disabled
+            return
+        }
+
         let hasPerms = await hasPermissions()
         if !hasPerms {
             let requested = await requestPermissions()
@@ -498,5 +514,26 @@ final class SleepManager {
 
         let value = disabled ? "1" : "0"
         await runSudoPmset(args: ["-a", "disablesleep", value])
+    }
+
+    private func setSleepDisabledCaffeinate(_ enabled: Bool) async {
+        caffeinateProcess?.terminate()
+        caffeinateProcess = nil
+
+        guard enabled else { return }
+
+        await Task.detached(priority: .userInitiated) {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/caffeinate")
+            process.arguments = ["-di"]
+            do {
+                try process.run()
+                await MainActor.run { [weak self] in
+                    self?.caffeinateProcess = process
+                }
+            } catch {
+                self.logger.error("Failed to launch caffeinate: \(error)")
+            }
+        }.value
     }
 }
