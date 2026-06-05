@@ -83,6 +83,12 @@ final class SleepManager {
         set { UserDefaults.standard.set(newValue, forKey: requireChargingKey) }
     }
 
+    let watchedAppsKey = "watchedAppBundleIDs"
+    var watchedAppBundleIDs: [String] {
+        get { UserDefaults.standard.stringArray(forKey: watchedAppsKey) ?? [] }
+        set { UserDefaults.standard.set(newValue, forKey: watchedAppsKey) }
+    }
+
     private var caffeinateProcess: Process?
 
     private let firstLaunchKey = "hasLaunchedBefore"
@@ -106,6 +112,7 @@ final class SleepManager {
         setupTerminationObserver()
         setupSleepNotificationObserver()
         setupPowerMonitor()
+        setupAppMonitor()
 
         checkStatus()
     }
@@ -118,6 +125,10 @@ final class SleepManager {
 
     func markFirstLaunchComplete() {
         UserDefaults.standard.set(true, forKey: firstLaunchKey)
+    }
+
+    func updateWatchedApps() {
+        AppMonitor.shared.updateWatchedBundleIDs(Set(watchedAppBundleIDs))
     }
 
     // MARK: - Observers
@@ -156,6 +167,39 @@ final class SleepManager {
                 }
             }
         }
+    }
+
+    private func setupAppMonitor() {
+        AppMonitor.shared.start(
+            bundleIDs: Set(watchedAppBundleIDs),
+            onAnyWatchedRunning: { [weak self] in
+                Task { @MainActor in
+                    guard let self else { return }
+                    guard !self.isSleepDisabled, !self.isToggling else { return }
+                    if self.requireCharging && !PowerMonitor.shared.isOnACPower { return }
+                    self.sleepDisabledUntil = nil
+                    self.durationTask = nil
+                    await self.setSleepDisabled(true)
+                    self.sendNotification(
+                        title: "Sleep Prevention Enabled",
+                        body: "A watched app is running."
+                    )
+                }
+            },
+            onAllWatchedGone: { [weak self] in
+                Task { @MainActor in
+                    guard let self else { return }
+                    guard self.isSleepDisabled, self.watchedAppBundleIDs.count > 0 else { return }
+                    self.sleepDisabledUntil = nil
+                    self.durationTask = nil
+                    await self.setSleepDisabled(false)
+                    self.sendNotification(
+                        title: "Sleep Prevention Disabled",
+                        body: "All watched apps have closed."
+                    )
+                }
+            }
+        )
     }
 
     private func setupSleepNotificationObserver() {
