@@ -76,6 +76,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let button = statusItem.button {
             let name = sleepManager.isSleepDisabled ? "bolt.fill" : "moon.zzz.fill"
             button.image = NSImage(systemSymbolName: name, accessibilityDescription: "Insomniac")
+
+            if sleepManager.isSleepDisabled, let remaining = sleepManager.formatRemainingTime() {
+                button.imagePosition = .imageLeft
+                button.attributedTitle = NSAttributedString(
+                    string: " " + remaining,
+                    attributes: [
+                        .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium),
+                        .foregroundColor: NSColor.systemOrange
+                    ]
+                )
+            } else {
+                button.attributedTitle = NSAttributedString(string: "")
+            }
         }
     }
 
@@ -94,6 +107,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         tooltipTimer?.invalidate()
         tooltipTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
             Task { @MainActor in
+                self?.updateIcon()
                 self?.updateTooltip()
             }
         }
