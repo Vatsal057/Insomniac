@@ -145,6 +145,16 @@ final class SleepManager {
         set { UserDefaults.standard.set(newValue, forKey: "watchedNetworks") }
     }
 
+    // Power-event exclusions
+    var dimOnBatteryOnly: Bool {
+        get { UserDefaults.standard.bool(forKey: "dimOnBatteryOnly") }
+        set { UserDefaults.standard.set(newValue, forKey: "dimOnBatteryOnly") }
+    }
+    var skipDimOnExternalDisplay: Bool {
+        get { UserDefaults.standard.bool(forKey: "skipDimOnExternalDisplay") }
+        set { UserDefaults.standard.set(newValue, forKey: "skipDimOnExternalDisplay") }
+    }
+
     private var caffeinateProcess: Process?
 
     private let firstLaunchKey = "hasLaunchedBefore"
@@ -505,6 +515,14 @@ final class SleepManager {
         dimTask = nil
 
         if DisplayManager.shared.isLidClosed() {
+            // Skip dimming if external display is attached and user opted in
+            if skipDimOnExternalDisplay && isExternalDisplayConnected() {
+                return
+            }
+            // Skip dimming on battery if user opted out of dimming while unplugged
+            if dimOnBatteryOnly && PowerMonitor.shared.isOnACPower {
+                return
+            }
             dimTask = Task {
                 do {
                     try await Task.sleep(nanoseconds: 5 * 1_000_000_000)
@@ -514,6 +532,22 @@ final class SleepManager {
         } else {
             DisplayManager.shared.restoreScreen()
         }
+    }
+
+    /// Returns true if any display other than the built-in one is connected.
+    private func isExternalDisplayConnected() -> Bool {
+        var maxDisplays: UInt32 = 8
+        var displayIds = [CGDirectDisplayID](repeating: 0, count: Int(maxDisplays))
+        var actualCount: UInt32 = 0
+
+        let result = CGGetActiveDisplayList(maxDisplays, &displayIds, &actualCount)
+        guard result == .success else { return false }
+
+        let mainDisplay = CGMainDisplayID()
+        for i in 0..<Int(actualCount) where displayIds[i] != mainDisplay {
+            return true
+        }
+        return false
     }
 
     // MARK: - Toggle

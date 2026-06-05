@@ -21,6 +21,8 @@ struct SettingsView: View {
     @State private var networkBasedEnabled = SleepManager.shared.networkBasedEnabled
     @State private var watchedNetworks = SleepManager.shared.watchedNetworks
     @State private var newNetworkName = ""
+    @State private var dimOnBatteryOnly = SleepManager.shared.dimOnBatteryOnly
+    @State private var skipDimOnExternalDisplay = SleepManager.shared.skipDimOnExternalDisplay
 
     struct WatchedApp {
         let bundleID: String
@@ -235,6 +237,20 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
+            Section("Power Events") {
+                Toggle("Dim screen only on battery", isOn: $dimOnBatteryOnly)
+                    .onChange(of: dimOnBatteryOnly) { _, newValue in
+                        SleepManager.shared.dimOnBatteryOnly = newValue
+                    }
+                Toggle("Skip dimming when external display connected", isOn: $skipDimOnExternalDisplay)
+                    .onChange(of: skipDimOnExternalDisplay) { _, newValue in
+                        SleepManager.shared.skipDimOnExternalDisplay = newValue
+                    }
+                Text("When the lid closes, Insomniac dims the built-in display after 5 seconds. These options add an extra gate before dimming.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Default Duration") {
                 Picker("When enabling via shortcut", selection: $defaultDuration) {
                     Text("Indefinitely").tag(SleepManager.DurationOption.indefinite)
@@ -288,6 +304,8 @@ struct SettingsView: View {
             activityIdleTimeout = SleepManager.shared.activityIdleTimeoutSeconds
             networkBasedEnabled = SleepManager.shared.networkBasedEnabled
             watchedNetworks = SleepManager.shared.watchedNetworks
+            dimOnBatteryOnly = SleepManager.shared.dimOnBatteryOnly
+            skipDimOnExternalDisplay = SleepManager.shared.skipDimOnExternalDisplay
         }
     }
 

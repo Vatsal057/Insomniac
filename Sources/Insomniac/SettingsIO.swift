@@ -19,6 +19,8 @@ enum SettingsIO {
     "scheduleDays",
     "networkBasedEnabled",
     "watchedNetworks",
+    "dimOnBatteryOnly",
+    "skipDimOnExternalDisplay",
     "activityBasedEnabled",
         "activityThresholdPercent",
         "dimOnBatteryOnly",
