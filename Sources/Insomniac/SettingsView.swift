@@ -63,6 +63,14 @@ struct SettingsView: View {
                     Text(versionString())
                         .foregroundStyle(.secondary)
                 }
+                HStack(spacing: 12) {
+                    Button("Export Settings\u{2026}") {
+                        SettingsIO.exportSettings()
+                    }
+                    Button("Import Settings\u{2026}") {
+                        SettingsIO.importSettings()
+                    }
+                }
             }
         }
         .padding(20)
