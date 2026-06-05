@@ -18,6 +18,9 @@ struct SettingsView: View {
     @State private var activityBasedEnabled = SleepManager.shared.activityBasedEnabled
     @State private var activityThresholdPercent = SleepManager.shared.activityThresholdPercent
     @State private var activityIdleTimeout = SleepManager.shared.activityIdleTimeoutSeconds
+    @State private var networkBasedEnabled = SleepManager.shared.networkBasedEnabled
+    @State private var watchedNetworks = SleepManager.shared.watchedNetworks
+    @State private var newNetworkName = ""
 
     struct WatchedApp {
         let bundleID: String
@@ -193,6 +196,45 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
+            Section("Network") {
+                Toggle("Keep awake on selected Wi-Fi networks", isOn: $networkBasedEnabled)
+                    .onChange(of: networkBasedEnabled) { _, newValue in
+                        SleepManager.shared.networkBasedEnabled = newValue
+                        SleepManager.shared.startNetworkMonitor()
+                    }
+
+                if networkBasedEnabled {
+                    HStack {
+                        TextField("Network name (SSID)", text: $newNetworkName)
+                            .textFieldStyle(.roundedBorder)
+                            .onSubmit(addNetwork)
+                        Button("Add") { addNetwork() }
+                            .disabled(newNetworkName.trimmingCharacters(in: .whitespaces).isEmpty)
+                    }
+
+                    if !watchedNetworks.isEmpty {
+                        ForEach(watchedNetworks, id: \.self) { network in
+                            HStack {
+                                Image(systemName: "wifi")
+                                    .foregroundStyle(.secondary)
+                                Text(network)
+                                Spacer()
+                                Button {
+                                    removeNetwork(network)
+                                } label: {
+                                    Image(systemName: "minus.circle.fill")
+                                        .foregroundStyle(.secondary)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+                }
+                Text("Insomniac will keep your Mac awake only when connected to one of these networks. On macOS 14+, location permission is required to read the current SSID.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Default Duration") {
                 Picker("When enabling via shortcut", selection: $defaultDuration) {
                     Text("Indefinitely").tag(SleepManager.DurationOption.indefinite)
@@ -244,6 +286,8 @@ struct SettingsView: View {
             activityBasedEnabled = SleepManager.shared.activityBasedEnabled
             activityThresholdPercent = SleepManager.shared.activityThresholdPercent
             activityIdleTimeout = SleepManager.shared.activityIdleTimeoutSeconds
+            networkBasedEnabled = SleepManager.shared.networkBasedEnabled
+            watchedNetworks = SleepManager.shared.watchedNetworks
         }
     }
 
@@ -290,6 +334,25 @@ struct SettingsView: View {
         SleepManager.shared.watchedAppBundleIDs = current
         SleepManager.shared.updateWatchedApps()
         loadWatchedApps()
+    }
+
+    private func addNetwork() {
+        let trimmed = newNetworkName.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return }
+        var current = SleepManager.shared.watchedNetworks
+        if !current.contains(trimmed) {
+            current.append(trimmed)
+            SleepManager.shared.watchedNetworks = current
+            watchedNetworks = current
+        }
+        newNetworkName = ""
+    }
+
+    private func removeNetwork(_ ssid: String) {
+        var current = SleepManager.shared.watchedNetworks
+        current.removeAll { $0 == ssid }
+        SleepManager.shared.watchedNetworks = current
+        watchedNetworks = current
     }
 
     private func showAlert(title: String, message: String) {

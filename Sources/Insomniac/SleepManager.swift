@@ -134,6 +134,17 @@ final class SleepManager {
         set { UserDefaults.standard.set(newValue, forKey: "activityIdleTimeoutSeconds") }
     }
 
+    // Network (SSID)
+    let networkBasedEnabledKey = "networkBasedEnabled"
+    var networkBasedEnabled: Bool {
+        get { UserDefaults.standard.bool(forKey: networkBasedEnabledKey) }
+        set { UserDefaults.standard.set(newValue, forKey: networkBasedEnabledKey) }
+    }
+    var watchedNetworks: [String] {
+        get { (UserDefaults.standard.array(forKey: "watchedNetworks") as? [String]) ?? [] }
+        set { UserDefaults.standard.set(newValue, forKey: "watchedNetworks") }
+    }
+
     private var caffeinateProcess: Process?
 
     private let firstLaunchKey = "hasLaunchedBefore"
@@ -160,6 +171,7 @@ final class SleepManager {
         setupAppMonitor()
         startSchedule()
         startActivityMonitor()
+        startNetworkMonitor()
 
         checkStatus()
     }
@@ -286,6 +298,46 @@ final class SleepManager {
                 sendNotification(
                     title: "Sleep Prevention Disabled",
                     body: "System has been idle."
+                )
+            }
+        }
+    }
+
+    // MARK: - Network monitor
+
+    func startNetworkMonitor() {
+        NetworkMonitor.shared.start { [weak self] ssid in
+            Task { @MainActor in
+                self?.checkNetwork(ssid: ssid)
+            }
+        }
+        checkNetwork(ssid: NetworkMonitor.shared.currentSSID)
+    }
+
+    private func checkNetwork(ssid: String?) {
+        guard networkBasedEnabled, !isToggling else { return }
+
+        let isOnWatchedNetwork = ssid.map { watchedNetworks.contains($0) } ?? false
+
+        if isOnWatchedNetwork && !isSleepDisabled {
+            if requireCharging && !PowerMonitor.shared.isOnACPower { return }
+            sleepDisabledUntil = nil
+            durationTask = nil
+            Task {
+                await setSleepDisabled(true)
+                sendNotification(
+                    title: "Sleep Prevention Enabled",
+                    body: "Connected to \(ssid ?? "watched network")."
+                )
+            }
+        } else if !isOnWatchedNetwork && isSleepDisabled {
+            sleepDisabledUntil = nil
+            durationTask = nil
+            Task {
+                await setSleepDisabled(false)
+                sendNotification(
+                    title: "Sleep Prevention Disabled",
+                    body: ssid.map { "Switched to \($0)." } ?? "Disconnected from Wi-Fi."
                 )
             }
         }
