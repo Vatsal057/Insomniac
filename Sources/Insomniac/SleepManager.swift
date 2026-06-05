@@ -536,7 +536,7 @@ final class SleepManager {
 
     /// Returns true if any display other than the built-in one is connected.
     private func isExternalDisplayConnected() -> Bool {
-        var maxDisplays: UInt32 = 8
+        let maxDisplays: UInt32 = 8
         var displayIds = [CGDirectDisplayID](repeating: 0, count: Int(maxDisplays))
         var actualCount: UInt32 = 0
 
@@ -847,18 +847,41 @@ final class SleepManager {
 
         guard enabled else { return }
 
-        await Task.detached(priority: .userInitiated) {
+        let process = await Task.detached(priority: .userInitiated) { () -> Process? in
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/usr/bin/caffeinate")
             process.arguments = ["-di"]
             do {
                 try process.run()
-                await MainActor.run { [weak self] in
-                    self?.caffeinateProcess = process
-                }
+                return process
             } catch {
-                self.logger.error("Failed to launch caffeinate: \(error)")
+                return nil
             }
         }.value
+
+        guard let process else {
+            logger.error("Failed to launch caffeinate")
+            return
+        }
+
+        caffeinateProcess = process
+
+        // If caffeinate dies for any reason (e.g. user kills it in Activity
+        // Monitor), treat sleep as no longer disabled.
+        process.terminationHandler = { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                if self.caffeinateProcess === process {
+                    self.caffeinateProcess = nil
+                    if self.isSleepDisabled {
+                        self.isSleepDisabled = false
+                        self.sendNotification(
+                            title: "Sleep Prevention Disabled",
+                            body: "The caffeinate process ended unexpectedly."
+                        )
+                    }
+                }
+            }
+        }
     }
 }

@@ -1,14 +1,12 @@
 import Foundation
-import CoreLocation
 import Network
 
 /// Monitors the current Wi-Fi SSID and notifies via callback on changes.
 /// Uses `networksetup` shell command for SSID lookup (works on modern macOS
 /// without requiring location permission).
-final class NetworkMonitor: NSObject, CLLocationManagerDelegate {
+final class NetworkMonitor {
     static let shared = NetworkMonitor()
 
-    private let locationManager = CLLocationManager()
     private let monitor = NWPathMonitor()
     private let monitorQueue = DispatchQueue(label: "com.insomniac.networkmonitor")
 
@@ -16,17 +14,63 @@ final class NetworkMonitor: NSObject, CLLocationManagerDelegate {
     private var lastSSID: String?
     private var pollTimer: Timer?
 
-    private override init() {
-        super.init()
-        locationManager.delegate = self
-    }
+    private init() {}
 
     /// Returns the current Wi-Fi SSID, or nil if not connected to Wi-Fi.
-    /// Uses `networksetup -getairportnetwork` (works on macOS 14+).
+    /// Tries each Wi-Fi interface reported by `networksetup -listallhardwareports`
+    /// and returns the first one that has an active SSID.
     var currentSSID: String? {
+        let interfaces = listWiFiInterfaces()
+        for interface in interfaces {
+            if let ssid = ssidForInterface(interface) {
+                return ssid
+            }
+        }
+        return nil
+    }
+
+    private func listWiFiInterfaces() -> [String] {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/sbin/networksetup")
-        process.arguments = ["-getairportnetwork", "en0"]
+        process.arguments = ["-listallhardwareports"]
+
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = Pipe()
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            return ["en0"]  // sensible default
+        }
+
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        guard let output = String(data: data, encoding: .utf8) else {
+            return ["en0"]
+        }
+
+        var interfaces: [String] = []
+        var currentType: String?
+        let lines = output.components(separatedBy: .newlines)
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("Hardware Port:") {
+                currentType = trimmed.replacingOccurrences(of: "Hardware Port: ", with: "")
+            } else if trimmed.hasPrefix("Device:") {
+                let device = trimmed.replacingOccurrences(of: "Device: ", with: "")
+                if let type = currentType, type.lowercased().contains("wi-fi") {
+                    interfaces.append(device)
+                }
+            }
+        }
+        return interfaces.isEmpty ? ["en0"] : interfaces
+    }
+
+    private func ssidForInterface(_ interface: String) -> String? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/sbin/networksetup")
+        process.arguments = ["-getairportnetwork", interface]
 
         let pipe = Pipe()
         process.standardOutput = pipe

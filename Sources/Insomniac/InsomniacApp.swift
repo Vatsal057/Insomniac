@@ -339,8 +339,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let hostingController = NSHostingController(rootView: SettingsView())
         let window = NSWindow(contentViewController: hostingController)
         window.title = "Insomniac Settings"
-        window.styleMask = [.titled, .closable]
-        window.setContentSize(NSSize(width: 420, height: 320))
+        window.styleMask = [.titled, .closable, .resizable]
+        window.setContentSize(NSSize(width: 460, height: 720))
+        window.minSize = NSSize(width: 460, height: 400)
         window.center()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)

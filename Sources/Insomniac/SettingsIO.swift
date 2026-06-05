@@ -14,17 +14,15 @@ enum SettingsIO {
         "scheduleEnabled",
         "scheduleStartHour",
         "scheduleStartMinute",
-    "scheduleEndHour",
-    "scheduleEndMinute",
-    "scheduleDays",
-    "networkBasedEnabled",
-    "watchedNetworks",
-    "dimOnBatteryOnly",
-    "skipDimOnExternalDisplay",
-    "activityBasedEnabled",
-        "activityThresholdPercent",
+        "scheduleEndHour",
+        "scheduleEndMinute",
+        "scheduleDays",
+        "networkBasedEnabled",
         "dimOnBatteryOnly",
-        "skipDimOnExternalDisplay"
+        "skipDimOnExternalDisplay",
+        "activityBasedEnabled",
+        "activityThresholdPercent",
+        "activityIdleTimeoutSeconds"
     ]
 
     static func exportSettings() {

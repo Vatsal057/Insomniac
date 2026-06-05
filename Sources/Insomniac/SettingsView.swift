@@ -49,6 +49,17 @@ struct SettingsView: View {
                 Toggle("Use caffeinate (no sudo required)", isOn: $useCaffeinate)
                     .onChange(of: useCaffeinate) { _, newValue in
                         SleepManager.shared.useCaffeinate = newValue
+                        // If sleep is currently active, re-apply under the new mechanism
+                        if SleepManager.shared.isSleepDisabled {
+                            Task { @MainActor in
+                                await SleepManager.shared.setSleepDisabled(false)
+                                if let dur = SleepManager.shared.remainingTime {
+                                    SleepManager.shared.enableSleep(duration: dur)
+                                } else {
+                                    SleepManager.shared.enableSleep(duration: nil)
+                                }
+                            }
+                        }
                     }
                 Text("Caffeinate mode prevents idle sleep only. It does not keep your Mac awake when the lid is closed.")
                     .font(.caption)
@@ -232,7 +243,7 @@ struct SettingsView: View {
                         }
                     }
                 }
-                Text("Insomniac will keep your Mac awake only when connected to one of these networks. On macOS 14+, location permission is required to read the current SSID.")
+                Text("Insomniac will keep your Mac awake only when connected to one of these networks. No location permission is required.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -291,7 +302,7 @@ struct SettingsView: View {
             }
         }
         .padding(20)
-        .frame(width: 420)
+        .frame(minWidth: 420)
         .onAppear {
             launchAtLogin = SMAppService.mainApp.status == .enabled
             autoDeactivate = SleepManager.shared.autoDeactivateOnSleep

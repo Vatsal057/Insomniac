@@ -9,12 +9,18 @@ final class ActivityMonitor {
 
     private init() {}
 
-    /// Returns the idle time in seconds (time since last user input).
+    /// Returns the idle time in seconds (time since last user input —
+    /// mouse movement OR keyboard activity, whichever is more recent).
     var systemIdleTime: TimeInterval {
-        return CGEventSource.secondsSinceLastEventType(
+        let mouseIdle = CGEventSource.secondsSinceLastEventType(
             .combinedSessionState,
             eventType: .mouseMoved
         )
+        let keyIdle = CGEventSource.secondsSinceLastEventType(
+            .combinedSessionState,
+            eventType: .keyDown
+        )
+        return min(mouseIdle, keyIdle)
     }
 
     /// Returns current CPU usage as a percentage (0-100).
