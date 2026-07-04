@@ -8,6 +8,7 @@
 # Build artifacts
 *.app/
 *.dSYM/
+*.dmg
 Archive.zip
 
 # Xcode (if any)

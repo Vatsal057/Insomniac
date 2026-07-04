@@ -28,11 +28,17 @@ You choose how long to keep it on — indefinitely, for 30 minutes, or for a few
 - **While charging only** — automatically disable sleep prevention on battery
 - **Caffeinate mode** — use `caffeinate` instead of `pmset` (no `sudo` required)
 
+### Cursor tools
+- **Mouse jiggler** — subtly moves the cursor while a sleep-prevention session is active, keeping presence/status apps green
+- **Auto clicker** — periodically clicks a chosen screen location (left/right/middle/double), with smooth human-like motion and optional cursor return
+- Both run **only while sleep prevention is on** — they start and stop with your session, and can be limited to when the system is idle
+
 ### Triggers
 - **Watched apps** — auto-enable when a specific app launches, auto-disable when it quits
 - **Schedule** — pick days of the week and a time window; auto-enable and auto-disable on the schedule
 - **Activity-based** — keep the Mac awake when CPU usage exceeds a threshold or the system has been active recently, and let it sleep when idle
 - **Specific networks** — auto-enable only when connected to a user-configured SSID
+- **Download watcher** — keep awake while in-progress downloads (`.crdownload`, `.part`, …) exist in a watched folder
 
 ### Power events
 - **Dim on battery only** — skip dimming the screen on lid close when connected to AC
@@ -45,25 +51,35 @@ You choose how long to keep it on — indefinitely, for 30 minutes, or for a few
 ## Requirements
 
 - macOS 14.0 (Sonoma) or later
-- One-time `sudo` configuration (the app will prompt you on first use)
+- One-time `sudo` configuration (the app will prompt you on first use; not needed in caffeinate mode)
+- Accessibility permission — only if you use the cursor jiggler/clicker
 
 ## Installation
+
+### Download (recommended)
+
+1. Grab `Insomniac.dmg` from the [latest release](https://github.com/Vatsal057/Insomniac/releases/latest)
+2. Open the DMG and drag **Insomniac** into **Applications**
+3. Launch Insomniac — a short welcome guide walks you through setup
+
+> **Note:** The app is ad-hoc signed (not notarized). If macOS blocks the first
+> launch, right-click the app → **Open**, or run:
+> `xattr -cr /Applications/Insomniac.app`
 
 ### Build from source
 
 ```bash
 git clone https://github.com/Vatsal057/Insomniac.git
 cd Insomniac
-swift build -c release
-.build/release/Insomniac
+chmod +x build.sh
+./build.sh          # builds Insomniac.app
+open Insomniac.app
 ```
 
-### Create app bundle
+### Package a DMG yourself
 
 ```bash
-chmod +x build.sh
-./build.sh
-open Insomniac.app
+./build.sh dmg      # builds Insomniac.app and Insomniac.dmg
 ```
 
 ## Usage
@@ -125,20 +141,23 @@ Quit Insomniac
 
 Accessible from the context menu or with `⌘,`.
 
-| Section | Setting | What it does |
-|---------|---------|-------------|
+| Tab | Setting | What it does |
+|-----|---------|-------------|
 | **General** | Launch at login | Register Insomniac as a login item |
-| **General** | Use caffeinate mode | Use `caffeinate` instead of `pmset` (skips the `sudo` prompt) |
+| **General** | Start session on launch | Begin a sleep-prevention session as soon as the app starts |
+| **General** | Quick-start toggle style | Choose whether left-click toggles or opens the menu |
 | **General** | Only while on AC power | Auto-disable on battery |
-| **General** | Keyboard shortcut | Record a custom global hotkey |
-| **Schedule** | Days of week + time window | Auto-enable on the schedule, auto-disable outside it |
+| **General** | Use caffeinate mode | Use `caffeinate` instead of `pmset` (skips the `sudo` prompt) |
+| **General** | Lid & Display | Dim only on battery / skip dim when an external display is connected |
+| **General** | Welcome Guide / Export / Import | Re-open onboarding, back up or restore settings as a `.plist` |
+| **Session Defaults** | Default duration | 30m / 1h / 3h / 8h / Indefinite |
+| **Session Defaults** | Keyboard shortcut | Record a custom global hotkey |
+| **Cursor** | Jiggler & clicker | Cursor motion, click target, interval, idle gating, speed |
+| **Triggers** | Schedule | Days of week + time window; auto-enable/disable |
+| **Triggers** | Activity detection | Keep awake while CPU > threshold or system is in use |
+| **Triggers** | Download watcher | Keep awake while downloads are in progress in a folder |
 | **Triggers** | Watched apps | Auto-enable when a specific app launches |
-| **Activity** | Keep awake when active | Keep awake while CPU > threshold or system is active |
-| **Network** | Keep awake on selected Wi-Fi networks | Only auto-enable on the configured SSIDs |
-| **Power Events** | Dim screen only on battery | Skip dimming on lid close when on AC power |
-| **Power Events** | Skip dim on external display | Don't dim the built-in display if an external monitor is attached |
-| **Default Duration** | 30m / 1h / 3h / 8h / Indefinite | Default toggle duration |
-| **About** | Export / Import | Back up or restore all settings as a `.plist` |
+| **Triggers** | Wi-Fi networks | Only auto-enable on the configured SSIDs |
 
 ## URL scheme
 
