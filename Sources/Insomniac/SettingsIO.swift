@@ -22,7 +22,21 @@ enum SettingsIO {
         "skipDimOnExternalDisplay",
         "activityBasedEnabled",
         "activityThresholdPercent",
-        "activityIdleTimeoutSeconds"
+        "activityIdleTimeoutSeconds",
+        "mouseJigglerEnabled",
+        "mouseClickerEnabled",
+        "mouseJigglerInterval",
+        "mouseJigglerInactivityDelay",
+        "mouseJigglerClickX",
+        "mouseJigglerClickY",
+        "mouseJigglerReturnCursor",
+        "mouseJigglerOnlyWhenIdle",
+        "mouseJigglerSpeed",
+        "mouseJigglerClickType",
+        "startSessionOnLaunch",
+        "quickStartToggleStyle",
+        "downloadWatcherEnabled",
+        "downloadWatcherPath"
     ]
 
     static func exportSettings() {
@@ -75,13 +89,25 @@ enum SettingsIO {
                 return
             }
 
-            for (key, value) in plist {
+            // Only accept known keys so a crafted plist can't pollute defaults.
+            for (key, value) in plist where keys.contains(key) {
                 UserDefaults.standard.set(value, forKey: key)
+            }
+
+            // Restart every monitor so imported triggers take effect immediately.
+            Task { @MainActor in
+                let manager = SleepManager.shared
+                manager.startSchedule()
+                manager.startActivityMonitor()
+                manager.startNetworkMonitor()
+                manager.startDownloadWatcher()
+                manager.updateWatchedApps()
+                MouseManager.shared.updateTimerState()
             }
 
             let alert = NSAlert()
             alert.messageText = "Settings Imported"
-            alert.informativeText = "Your settings have been restored. Some changes may require restarting Insomniac."
+            alert.informativeText = "Your settings have been restored and applied."
             alert.addButton(withTitle: "OK")
             alert.runModal()
         } catch {

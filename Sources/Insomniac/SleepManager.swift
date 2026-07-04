@@ -30,9 +30,16 @@ final class SleepManager {
         didSet {
             if isSleepDisabled {
                 startLidMonitor()
+                NSSound(named: "Glass")?.play()
             } else {
                 stopLidMonitor()
                 DisplayManager.shared.restoreScreen()
+                NSSound(named: "Tink")?.play()
+            }
+            // Deferred so this is safe when fired from within our own init
+            // (MouseManager reads SleepManager.shared).
+            Task { @MainActor in
+                MouseManager.shared.updateTimerState()
             }
         }
     }
@@ -155,6 +162,115 @@ final class SleepManager {
         set { UserDefaults.standard.set(newValue, forKey: "skipDimOnExternalDisplay") }
     }
 
+    // Launch Behavior
+    let startSessionOnLaunchKey = "startSessionOnLaunch"
+    var startSessionOnLaunch: Bool {
+        get { UserDefaults.standard.bool(forKey: startSessionOnLaunchKey) }
+        set { UserDefaults.standard.set(newValue, forKey: startSessionOnLaunchKey) }
+    }
+
+    // Quick-Start Toggle Action
+    let quickStartToggleStyleKey = "quickStartToggleStyle"
+    var quickStartToggleStyle: String {
+        get { UserDefaults.standard.string(forKey: quickStartToggleStyleKey) ?? "leftClickToggle" }
+        set { UserDefaults.standard.set(newValue, forKey: quickStartToggleStyleKey) }
+    }
+
+    // File Download Watcher
+    let downloadWatcherEnabledKey = "downloadWatcherEnabled"
+    var downloadWatcherEnabled: Bool {
+        get { UserDefaults.standard.bool(forKey: downloadWatcherEnabledKey) }
+        set {
+            UserDefaults.standard.set(newValue, forKey: downloadWatcherEnabledKey)
+            if newValue {
+                startDownloadWatcher()
+            } else {
+                stopDownloadWatcher()
+            }
+        }
+    }
+
+    let downloadWatcherPathKey = "downloadWatcherPath"
+    var downloadWatcherPath: String {
+        get {
+            UserDefaults.standard.string(forKey: downloadWatcherPathKey) ??
+                (FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first?.path ?? "")
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: downloadWatcherPathKey)
+        }
+    }
+
+    private var downloadWatcherTimer: Timer?
+    private var isDownloadingHeld = false
+
+    func startDownloadWatcher() {
+        downloadWatcherTimer?.invalidate()
+        guard downloadWatcherEnabled else { return }
+
+        downloadWatcherTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                self?.checkDownloads()
+            }
+        }
+        checkDownloads()
+    }
+
+    func stopDownloadWatcher() {
+        downloadWatcherTimer?.invalidate()
+        downloadWatcherTimer = nil
+        if isDownloadingHeld {
+            isDownloadingHeld = false
+            Task {
+                await setSleepDisabled(false)
+                sendNotification(
+                    title: "Sleep Prevention Disabled",
+                    body: "Downloads completed."
+                )
+            }
+        }
+    }
+
+    private func checkDownloads() {
+        guard downloadWatcherEnabled, !isToggling else { return }
+
+        let path = downloadWatcherPath
+        guard !path.isEmpty, FileManager.default.fileExists(atPath: path) else { return }
+
+        do {
+            let files = try FileManager.default.contentsOfDirectory(atPath: path)
+            let activeDownload = files.contains { file in
+                let lower = file.lowercased()
+                return lower.hasSuffix(".crdownload") ||
+                       lower.hasSuffix(".download") ||
+                       lower.hasSuffix(".part") ||
+                       lower.hasSuffix(".tmp")
+            }
+
+            if activeDownload && !isSleepDisabled && !isDownloadingHeld {
+                isDownloadingHeld = true
+                Task {
+                    await setSleepDisabled(true)
+                    sendNotification(
+                        title: "Sleep Prevention Enabled",
+                        body: "Active download detected in watched folder."
+                    )
+                }
+            } else if !activeDownload && isDownloadingHeld {
+                isDownloadingHeld = false
+                Task {
+                    await setSleepDisabled(false)
+                    sendNotification(
+                        title: "Sleep Prevention Disabled",
+                        body: "Downloads completed."
+                    )
+                }
+            }
+        } catch {
+            logger.error("Failed to read downloads directory: \(error.localizedDescription)")
+        }
+    }
+
     private var caffeinateProcess: Process?
 
     private let firstLaunchKey = "hasLaunchedBefore"
@@ -182,6 +298,7 @@ final class SleepManager {
         startSchedule()
         startActivityMonitor()
         startNetworkMonitor()
+        startDownloadWatcher()
 
         checkStatus()
     }

@@ -4,6 +4,7 @@ import AppKit
 import CoreGraphics
 
 /// Monitors user activity (keyboard/mouse) and system CPU usage.
+@MainActor
 final class ActivityMonitor {
     static let shared = ActivityMonitor()
 
@@ -11,19 +12,25 @@ final class ActivityMonitor {
 
     /// Returns the idle time in seconds (time since last user input —
     /// mouse movement OR keyboard activity, whichever is more recent).
+    /// Note: CGEventType has no "any input" case in Swift, so take the
+    /// minimum across the input event types we care about.
     var systemIdleTime: TimeInterval {
-        let mouseIdle = CGEventSource.secondsSinceLastEventType(
-            .combinedSessionState,
-            eventType: .mouseMoved
-        )
-        let keyIdle = CGEventSource.secondsSinceLastEventType(
-            .combinedSessionState,
-            eventType: .keyDown
-        )
-        return min(mouseIdle, keyIdle)
+        let inputTypes: [CGEventType] = [
+            .mouseMoved, .leftMouseDown, .rightMouseDown, .otherMouseDown,
+            .leftMouseDragged, .rightMouseDragged, .keyDown, .scrollWheel
+        ]
+        let idle = inputTypes
+            .map { CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: $0) }
+            .min() ?? 0.0
+        return idle >= 0 ? idle : 0.0
     }
 
-    /// Returns current CPU usage as a percentage (0-100).
+    private var previousActiveTicks: UInt64 = 0
+    private var previousIdleTicks: UInt64 = 0
+
+    /// Returns current CPU usage as a percentage (0-100), measured as the
+    /// delta since the previous call (host_processor_info ticks are
+    /// cumulative since boot). The first call returns the boot-average.
     var cpuUsagePercent: Double {
         var processorInfoArray: processor_info_array_t?
         var processorMsgCount: mach_msg_type_number_t = 0
@@ -46,22 +53,24 @@ final class ActivityMonitor {
             vm_deallocate(mach_task_self_, vm_address_t(bitPattern: infoArray), vm_size_t(size))
         }
 
-        var totalUser: UInt32 = 0
-        var totalSystem: UInt32 = 0
-        var totalNice: UInt32 = 0
-        var totalIdle: UInt32 = 0
+        var totalActive: UInt64 = 0
+        var totalIdle: UInt64 = 0
 
         for i in 0..<Int(processorCount) {
             let offset = Int(CPU_STATE_MAX) * i
-            totalUser += UInt32(infoArray[offset + Int(CPU_STATE_USER)])
-            totalSystem += UInt32(infoArray[offset + Int(CPU_STATE_SYSTEM)])
-            totalNice += UInt32(infoArray[offset + Int(CPU_STATE_NICE)])
-            totalIdle += UInt32(infoArray[offset + Int(CPU_STATE_IDLE)])
+            totalActive += UInt64(UInt32(bitPattern: infoArray[offset + Int(CPU_STATE_USER)]))
+            totalActive += UInt64(UInt32(bitPattern: infoArray[offset + Int(CPU_STATE_SYSTEM)]))
+            totalActive += UInt64(UInt32(bitPattern: infoArray[offset + Int(CPU_STATE_NICE)]))
+            totalIdle += UInt64(UInt32(bitPattern: infoArray[offset + Int(CPU_STATE_IDLE)]))
         }
 
-        let total = totalUser + totalSystem + totalNice + totalIdle
-        guard total > 0 else { return 0 }
-        let active = total - totalIdle
-        return Double(active) / Double(total) * 100.0
+        let total = totalActive + totalIdle
+        let activeDelta = totalActive &- previousActiveTicks
+        let totalDelta = total &- (previousActiveTicks + previousIdleTicks)
+        previousActiveTicks = totalActive
+        previousIdleTicks = totalIdle
+
+        guard totalDelta > 0, activeDelta <= totalDelta else { return 0 }
+        return Double(activeDelta) / Double(totalDelta) * 100.0
     }
 }

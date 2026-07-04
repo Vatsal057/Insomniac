@@ -47,10 +47,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         observeState()
         startTooltipTimer()
         registerAppleScriptCommands()
+        MouseManager.shared.updateTimerState()
+
+        if sleepManager.startSessionOnLaunch {
+            sleepManager.enableSleep(duration: sleepManager.defaultDuration)
+        }
 
         if sleepManager.isFirstLaunch {
-            showWelcomeAlert()
-            sleepManager.markFirstLaunchComplete()
+            OnboardingManager.shared.show { [weak self] in
+                self?.sleepManager.markFirstLaunchComplete()
+            }
         }
     }
 
@@ -103,6 +109,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         tooltipTimer?.invalidate()
+        MouseManager.shared.stop()
+        LocationPickerManager.shared.close()
     }
 
     // MARK: - State observation
@@ -165,11 +173,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func handleStatusClick(_ sender: NSStatusBarButton) {
         let event = NSApp.currentEvent
-        if event?.type == .rightMouseUp ||
-            (event?.type == .leftMouseUp && event?.modifierFlags.contains(.control) == true) {
-            showMenu()
-        } else {
-            sleepManager.toggleSleep()
+        let isRightClick = event?.type == .rightMouseUp ||
+            (event?.type == .leftMouseUp && event?.modifierFlags.contains(.control) == true)
+
+        let style = sleepManager.quickStartToggleStyle
+
+        if style == "leftClickToggle" {
+            if isRightClick {
+                showMenu()
+            } else {
+                sleepManager.toggleSleep()
+            }
+        } else { // leftClickMenu
+            let isAltClick = event?.modifierFlags.contains(.option) == true
+            if isAltClick || isRightClick {
+                sleepManager.toggleSleep()
+            } else {
+                showMenu()
+            }
         }
     }
 
@@ -197,6 +218,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             "Sleep Prevention: OFF",
             color: .secondaryLabelColor
         )
+        status.image = NSImage(systemSymbolName: "moon.zzz.fill", accessibilityDescription: nil)
         menu.addItem(status)
 
         menu.addItem(.separator())
@@ -206,7 +228,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             action: nil,
             keyEquivalent: ""
         )
-        enable.isEnabled = false
+        enable.isEnabled = true
+        enable.image = NSImage(systemSymbolName: "play.fill", accessibilityDescription: nil)
         menu.addItem(enable)
 
         let submenu = NSMenu()
@@ -246,6 +269,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let settings = NSMenuItem(title: "Settings\u{2026}", action: #selector(openSettings), keyEquivalent: ",")
         settings.target = self
+        settings.image = NSImage(systemSymbolName: "gearshape.fill", accessibilityDescription: nil)
         menu.addItem(settings)
 
         menu.addItem(.separator())
@@ -253,11 +277,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let version = appVersionString()
         let about = NSMenuItem(title: "About Insomniac \(version)", action: #selector(showAbout), keyEquivalent: "")
         about.target = self
+        about.image = NSImage(systemSymbolName: "info.circle", accessibilityDescription: nil)
         menu.addItem(about)
 
         menu.addItem(.separator())
 
-        menu.addItem(NSMenuItem(title: "Quit Insomniac", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+        let quitItem = NSMenuItem(title: "Quit Insomniac", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        quitItem.image = NSImage(systemSymbolName: "xmark.circle.fill", accessibilityDescription: nil)
+        menu.addItem(quitItem)
     }
 
     private func addActiveStateMenu(to menu: NSMenu) {
@@ -271,6 +298,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let status = NSMenuItem(title: statusText, action: nil, keyEquivalent: "")
         status.isEnabled = false
         status.attributedTitle = styledTitle(statusText, color: .systemOrange)
+        status.image = NSImage(systemSymbolName: "bolt.fill", accessibilityDescription: nil)
         menu.addItem(status)
 
         menu.addItem(.separator())
@@ -281,12 +309,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             keyEquivalent: "t"
         )
         disable.target = self
+        disable.image = NSImage(systemSymbolName: "power", accessibilityDescription: nil)
         menu.addItem(disable)
 
         menu.addItem(.separator())
 
         let settings = NSMenuItem(title: "Settings\u{2026}", action: #selector(openSettings), keyEquivalent: ",")
         settings.target = self
+        settings.image = NSImage(systemSymbolName: "gearshape.fill", accessibilityDescription: nil)
         menu.addItem(settings)
 
         menu.addItem(.separator())
@@ -294,11 +324,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let version = appVersionString()
         let about = NSMenuItem(title: "About Insomniac \(version)", action: #selector(showAbout), keyEquivalent: "")
         about.target = self
+        about.image = NSImage(systemSymbolName: "info.circle", accessibilityDescription: nil)
         menu.addItem(about)
 
         menu.addItem(.separator())
 
-        menu.addItem(NSMenuItem(title: "Quit Insomniac", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+        let quitItem = NSMenuItem(title: "Quit Insomniac", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        quitItem.image = NSImage(systemSymbolName: "xmark.circle.fill", accessibilityDescription: nil)
+        menu.addItem(quitItem)
     }
 
     private func styledTitle(_ text: String, color: NSColor) -> NSAttributedString {
@@ -339,9 +372,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let hostingController = NSHostingController(rootView: SettingsView())
         let window = NSWindow(contentViewController: hostingController)
         window.title = "Insomniac Settings"
+        window.isReleasedWhenClosed = false
         window.styleMask = [.titled, .closable, .resizable]
-        window.setContentSize(NSSize(width: 460, height: 720))
-        window.minSize = NSSize(width: 460, height: 400)
+        window.setContentSize(NSSize(width: 520, height: 520))
+        window.minSize = NSSize(width: 500, height: 450)
         window.center()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -367,32 +401,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.runModal()
     }
 
-    // MARK: - First launch
-
-    private func showWelcomeAlert() {
-        let alert = NSAlert()
-        alert.messageText = "Welcome to Insomniac"
-        alert.informativeText = """
-            Insomniac keeps your Mac awake even when the lid is closed.
-
-            How to use it:
-            \u{2022} Left-click the menu bar icon to toggle sleep prevention
-            \u{2022} Right-click to pick a duration and access settings
-            \u{2022} Use \u{2318}\u{2325}I to toggle from anywhere
-
-            On first toggle, macOS will ask for your password to configure \
-            sleep settings. This only happens once.
-            """
-        alert.icon = NSImage(systemSymbolName: "moon.zzz.fill", accessibilityDescription: nil)
-        alert.addButton(withTitle: "Get Started")
-        alert.addButton(withTitle: "Quit")
-        alert.alertStyle = .informational
-
-        let response = alert.runModal()
-        if response == .alertSecondButtonReturn {
-            NSApp.terminate(nil)
-        }
-    }
 }
 
 extension URL {
