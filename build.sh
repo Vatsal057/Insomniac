@@ -1,23 +1,23 @@
 #!/bin/bash
+set -e
 
-# Insomniac Build & Setup Script
+# Insomniac Build & Packaging Script
+# Usage:
+#   ./build.sh        Build Insomniac.app
+#   ./build.sh dmg    Build Insomniac.app and package it as Insomniac.dmg
 
-# 1. Build the app in release mode
 echo "🔨 Building Insomniac..."
 swift build -c release
-
-if [ $? -ne 0 ]; then
-    echo "❌ Build failed."
-    exit 1
-fi
 echo "✅ Build successful."
 
 echo ""
 echo "📦 Creating Insomniac.app bundle..."
+rm -rf Insomniac.app
 mkdir -p Insomniac.app/Contents/MacOS Insomniac.app/Contents/Resources
 
 # Derive version/build from git if available, else fall back to 1.0 / 1
-VERSION=$(git describe --tags --abbrev=0 2>/dev/null || echo "1.0")
+VERSION=$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')
+VERSION=${VERSION:-1.0}
 BUILD=$(git rev-list --count HEAD 2>/dev/null || echo "1")
 YEAR=$(date +%Y)
 
@@ -34,6 +34,8 @@ cat > Insomniac.app/Contents/Info.plist << PLIST
     <string>Insomniac</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundleShortVersionString</key>
     <string>${VERSION}</string>
     <key>CFBundleVersion</key>
@@ -62,8 +64,26 @@ cat > Insomniac.app/Contents/Info.plist << PLIST
 PLIST
 
 cp .build/release/Insomniac Insomniac.app/Contents/MacOS/Insomniac
+cp icons/AppIcon.icns Insomniac.app/Contents/Resources/AppIcon.icns
+
+# Ad-hoc sign so Gatekeeper doesn't report the app as damaged on Apple Silicon
+echo "🔏 Codesigning (ad-hoc)..."
+codesign --force --deep --sign - Insomniac.app
+
 echo "✅ Insomniac.app created (version ${VERSION}, build ${BUILD})."
 
-echo ""
-echo "🚀 Setup complete! Run the app with:"
-echo "   open Insomniac.app"
+if [ "$1" = "dmg" ]; then
+    echo ""
+    echo "💿 Creating Insomniac.dmg..."
+    STAGING=$(mktemp -d)
+    cp -R Insomniac.app "$STAGING/"
+    ln -s /Applications "$STAGING/Applications"
+    rm -f Insomniac.dmg
+    hdiutil create -volname "Insomniac" -srcfolder "$STAGING" -ov -format UDZO Insomniac.dmg
+    rm -rf "$STAGING"
+    echo "✅ Insomniac.dmg created."
+else
+    echo ""
+    echo "🚀 Run the app with:  open Insomniac.app"
+    echo "   Or package a DMG:  ./build.sh dmg"
+fi
