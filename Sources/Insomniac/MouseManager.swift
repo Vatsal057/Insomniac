@@ -194,8 +194,9 @@ final class MouseManager {
         }
         let originalLocation = currentEvent.location
 
-        // 1. Process Clicker if enabled
-        if isClickerEnabled {
+        // 1. Process Clicker if enabled. (0,0) means the user never picked a
+        // target — skip rather than clicking the Apple menu corner.
+        if isClickerEnabled && (clickX != 0 || clickY != 0) {
             let targetLocation = CGPoint(x: clickX, y: clickY)
 
             // Move to target using smooth Bezier path

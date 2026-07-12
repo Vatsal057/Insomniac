@@ -57,6 +57,13 @@ final class SleepManager {
     private var isToggling = false
     private var durationTask: Task<Void, any Error>?
 
+    /// Cancels any pending duration-expiration task and clears the countdown.
+    private func clearSession() {
+        durationTask?.cancel()
+        durationTask = nil
+        sleepDisabledUntil = nil
+    }
+
     let autoDeactivateKey = "autoDeactivateOnSleep"
     var autoDeactivateOnSleep: Bool {
         get { UserDefaults.standard.bool(forKey: autoDeactivateKey) }
@@ -324,7 +331,8 @@ final class SleepManager {
 
     func startSchedule() {
         scheduleTimer?.invalidate()
-        wasInScheduledWindow = isInScheduledWindow()
+        // Seed false so enabling the schedule mid-window activates immediately.
+        wasInScheduledWindow = false
         scheduleTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.checkSchedule()
@@ -337,8 +345,7 @@ final class SleepManager {
         guard scheduleEnabled else { return }
         let inWindow = isInScheduledWindow()
         if inWindow && !wasInScheduledWindow && !isSleepDisabled && !isToggling {
-            sleepDisabledUntil = nil
-            durationTask = nil
+            clearSession()
             Task {
                 await setSleepDisabled(true)
                 sendNotification(
@@ -347,8 +354,7 @@ final class SleepManager {
                 )
             }
         } else if !inWindow && wasInScheduledWindow && isSleepDisabled {
-            sleepDisabledUntil = nil
-            durationTask = nil
+            clearSession()
             Task {
                 await setSleepDisabled(false)
                 sendNotification(
@@ -408,8 +414,7 @@ final class SleepManager {
 
         if isActive && !isSleepDisabled {
             if requireCharging && !PowerMonitor.shared.isOnACPower { return }
-            sleepDisabledUntil = nil
-            durationTask = nil
+            clearSession()
             Task {
                 await setSleepDisabled(true)
                 sendNotification(
@@ -418,8 +423,7 @@ final class SleepManager {
                 )
             }
         } else if !isActive && isSleepDisabled {
-            sleepDisabledUntil = nil
-            durationTask = nil
+            clearSession()
             Task {
                 await setSleepDisabled(false)
                 sendNotification(
@@ -448,8 +452,7 @@ final class SleepManager {
 
         if isOnWatchedNetwork && !isSleepDisabled {
             if requireCharging && !PowerMonitor.shared.isOnACPower { return }
-            sleepDisabledUntil = nil
-            durationTask = nil
+            clearSession()
             Task {
                 await setSleepDisabled(true)
                 sendNotification(
@@ -458,8 +461,7 @@ final class SleepManager {
                 )
             }
         } else if !isOnWatchedNetwork && isSleepDisabled {
-            sleepDisabledUntil = nil
-            durationTask = nil
+            clearSession()
             Task {
                 await setSleepDisabled(false)
                 sendNotification(
@@ -516,8 +518,7 @@ final class SleepManager {
                     guard let self else { return }
                     guard !self.isSleepDisabled, !self.isToggling else { return }
                     if self.requireCharging && !PowerMonitor.shared.isOnACPower { return }
-                    self.sleepDisabledUntil = nil
-                    self.durationTask = nil
+                    self.clearSession()
                     await self.setSleepDisabled(true)
                     self.sendNotification(
                         title: "Sleep Prevention Enabled",
@@ -529,8 +530,7 @@ final class SleepManager {
                 Task { @MainActor in
                     guard let self else { return }
                     guard self.isSleepDisabled, self.watchedAppBundleIDs.count > 0 else { return }
-                    self.sleepDisabledUntil = nil
-                    self.durationTask = nil
+                    self.clearSession()
                     await self.setSleepDisabled(false)
                     self.sendNotification(
                         title: "Sleep Prevention Disabled",
@@ -549,9 +549,7 @@ final class SleepManager {
         ) { [weak self] _ in
             Task { @MainActor in
                 guard let self, self.autoDeactivateOnSleep, self.isSleepDisabled else { return }
-                self.durationTask?.cancel()
-                self.durationTask = nil
-                self.sleepDisabledUntil = nil
+                self.clearSession()
                 await self.setSleepDisabled(false)
             }
         }
@@ -690,18 +688,25 @@ final class SleepManager {
 
         isToggling = true
 
-        durationTask?.cancel()
-        durationTask = nil
+        clearSession()
 
         if let duration, duration > 0 {
             sleepDisabledUntil = Date().addingTimeInterval(duration)
-        } else {
-            sleepDisabledUntil = nil
         }
 
         Task {
             await setSleepDisabled(true)
             isToggling = false
+
+            guard isSleepDisabled else {
+                // Permission was denied — don't claim success.
+                sleepDisabledUntil = nil
+                sendNotification(
+                    title: "Could Not Enable Sleep Prevention",
+                    body: "Insomniac needs permission to run pmset."
+                )
+                return
+            }
 
             if let duration, duration > 0 {
                 scheduleDurationExpiration(duration: duration)
@@ -723,13 +728,12 @@ final class SleepManager {
         guard !isToggling else { return }
         isToggling = true
 
-        durationTask?.cancel()
-        durationTask = nil
-        sleepDisabledUntil = nil
+        clearSession()
 
         Task {
             await setSleepDisabled(false)
             isToggling = false
+            guard !isSleepDisabled else { return }
             sendNotification(
                 title: "Sleep Prevention Disabled",
                 body: "Your Mac can now sleep normally."
@@ -809,13 +813,11 @@ final class SleepManager {
 
         guard let output = result else { return }
 
-        let lower = output.lowercased()
-        if lower.contains("sleepdisabled 1") || lower.contains("sleepdisabled\t1") ||
-           lower.contains("disablesleep 1") || lower.contains("disablesleep\t1") {
-            self.isSleepDisabled = true
-        } else {
-            self.isSleepDisabled = false
-        }
+        // pmset -g pads columns with variable whitespace.
+        self.isSleepDisabled = output.range(
+            of: #"(sleepdisabled|disablesleep)\s+1"#,
+            options: [.regularExpression, .caseInsensitive]
+        ) != nil
     }
 
     // MARK: - pmset helpers
@@ -868,7 +870,9 @@ final class SleepManager {
         let success = await Task.detached(priority: .userInitiated) {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
-            process.arguments = ["/usr/bin/pmset"] + args
+            // -n: fail instead of hanging on a password prompt if the
+            // sudoers entry was removed after we cached permissions.
+            process.arguments = ["-n", "/usr/bin/pmset"] + args
             do {
                 try process.run()
                 process.waitUntilExit()

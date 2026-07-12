@@ -65,6 +65,9 @@ PLIST
 
 cp .build/release/Insomniac Insomniac.app/Contents/MacOS/Insomniac
 cp icons/AppIcon.icns Insomniac.app/Contents/Resources/AppIcon.icns
+# SPM resource bundles (e.g. KeyboardShortcuts) — Bundle.module fatalErrors
+# at runtime if these are missing from Contents/Resources.
+cp -R .build/release/*.bundle Insomniac.app/Contents/Resources/
 
 # Ad-hoc sign so Gatekeeper doesn't report the app as damaged on Apple Silicon
 echo "🔏 Codesigning (ad-hoc)..."
