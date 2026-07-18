@@ -31,6 +31,26 @@ final class PowerMonitor {
         return false
     }
 
+    /// Current internal-battery charge percent (0–100), or nil on desktops /
+    /// when unavailable.
+    var batteryPercent: Int? {
+        guard let snapshot = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
+              let sources = IOPSCopyPowerSourcesList(snapshot)?.takeRetainedValue() as? [CFTypeRef] else {
+            return nil
+        }
+        for ps in sources {
+            guard let desc = IOPSGetPowerSourceDescription(snapshot, ps)?.takeUnretainedValue() as? [String: Any] else {
+                continue
+            }
+            if desc[kIOPSTypeKey] as? String == kIOPSInternalBatteryType,
+               let current = desc[kIOPSCurrentCapacityKey] as? Int,
+               let max = desc[kIOPSMaxCapacityKey] as? Int, max > 0 {
+                return Int((Double(current) / Double(max)) * 100.0)
+            }
+        }
+        return nil
+    }
+
     /// Start observing power state changes. Calls `onChange` on the main queue.
     func start(onChange: @escaping (Bool) -> Void) {
         stop()

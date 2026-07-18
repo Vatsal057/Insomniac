@@ -11,6 +11,11 @@ struct SettingsView: View {
     @State private var quickStartToggleStyle = SleepManager.shared.quickStartToggleStyle
     @State private var useCaffeinate = SleepManager.shared.useCaffeinate
     @State private var requireCharging = SleepManager.shared.requireCharging
+    @State private var thermalGuardEnabled = SleepManager.shared.thermalGuardEnabled
+    @State private var thermalGuardCriticalOnly = SleepManager.shared.thermalGuardCriticalOnly
+    @State private var batteryCutoffEnabled = SleepManager.shared.batteryCutoffEnabled
+    @State private var batteryCutoffPercent = SleepManager.shared.batteryCutoffPercent
+    @State private var autoCheckUpdates = UpdateChecker.autoCheckOnLaunch
 
     // Session Defaults
     @State private var defaultDuration: SleepManager.DurationOption = currentDefaultOption()
@@ -160,6 +165,40 @@ struct SettingsView: View {
                 .padding(.vertical, 4)
             }
 
+            GroupBox(label: labelView("Safety", systemImage: "exclamationmark.shield")) {
+                VStack(alignment: .leading, spacing: 10) {
+                    Toggle("Pause when the Mac runs hot", isOn: $thermalGuardEnabled)
+                        .onChange(of: thermalGuardEnabled) { _, v in
+                            SleepManager.shared.thermalGuardEnabled = v
+                        }
+                    Picker("Trip at:", selection: $thermalGuardCriticalOnly) {
+                        Text("Serious heat").tag(false)
+                        Text("Critical heat only").tag(true)
+                    }
+                    .pickerStyle(.menu)
+                    .disabled(!thermalGuardEnabled)
+                    .onChange(of: thermalGuardCriticalOnly) { _, v in
+                        SleepManager.shared.thermalGuardCriticalOnly = v
+                    }
+
+                    Divider()
+
+                    Toggle("Disable on low battery", isOn: $batteryCutoffEnabled)
+                        .onChange(of: batteryCutoffEnabled) { _, v in
+                            SleepManager.shared.batteryCutoffEnabled = v
+                        }
+                    Stepper("Cutoff: \(batteryCutoffPercent)%", value: $batteryCutoffPercent, in: 5...50, step: 5)
+                        .disabled(!batteryCutoffEnabled)
+                        .onChange(of: batteryCutoffPercent) { _, v in
+                            SleepManager.shared.batteryCutoffPercent = v
+                        }
+                    Text("On battery, sleep prevention turns off at the cutoff and stays off until you re-enable it.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.vertical, 4)
+            }
+
             GroupBox(label: labelView("Lid & Display", systemImage: "display")) {
                 VStack(alignment: .leading, spacing: 10) {
                     Toggle("Dim screen on lid close only while on battery", isOn: $dimOnBatteryOnly)
@@ -177,14 +216,25 @@ struct SettingsView: View {
             Spacer()
 
             GroupBox {
-                HStack {
-                    Text("Version \(versionString())")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Button("Welcome Guide...") { OnboardingManager.shared.show {} }
-                    Button("Export...") { SettingsIO.exportSettings() }
-                    Button("Import...") { SettingsIO.importSettings() }
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        Text("Version \(versionString())")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Check for Updates...") { UpdateChecker.checkForUpdates(silent: false) }
+                    }
+                    Toggle("Check for updates automatically on launch", isOn: $autoCheckUpdates)
+                        .onChange(of: autoCheckUpdates) { _, v in
+                            UpdateChecker.autoCheckOnLaunch = v
+                        }
+                    Divider()
+                    HStack {
+                        Button("Welcome Guide...") { OnboardingManager.shared.show {} }
+                        Spacer()
+                        Button("Export...") { SettingsIO.exportSettings() }
+                        Button("Import...") { SettingsIO.importSettings() }
+                    }
                 }
             }
         }
@@ -639,6 +689,11 @@ struct SettingsView: View {
         autoDeactivate = SleepManager.shared.autoDeactivateOnSleep
         useCaffeinate = SleepManager.shared.useCaffeinate
         requireCharging = SleepManager.shared.requireCharging
+        thermalGuardEnabled = SleepManager.shared.thermalGuardEnabled
+        thermalGuardCriticalOnly = SleepManager.shared.thermalGuardCriticalOnly
+        batteryCutoffEnabled = SleepManager.shared.batteryCutoffEnabled
+        batteryCutoffPercent = SleepManager.shared.batteryCutoffPercent
+        autoCheckUpdates = UpdateChecker.autoCheckOnLaunch
         defaultDuration = Self.currentDefaultOption()
         loadWatchedApps()
         scheduleEnabled = SleepManager.shared.scheduleEnabled

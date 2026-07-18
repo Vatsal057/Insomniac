@@ -97,6 +97,26 @@ final class SleepManager {
         set { UserDefaults.standard.set(newValue, forKey: requireChargingKey) }
     }
 
+    // Thermal guard
+    var thermalGuardEnabled: Bool {
+        get { UserDefaults.standard.object(forKey: "thermalGuardEnabled") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "thermalGuardEnabled") }
+    }
+    var thermalGuardCriticalOnly: Bool {
+        get { UserDefaults.standard.bool(forKey: "thermalGuardCriticalOnly") }
+        set { UserDefaults.standard.set(newValue, forKey: "thermalGuardCriticalOnly") }
+    }
+
+    // Low-battery cutoff
+    var batteryCutoffEnabled: Bool {
+        get { UserDefaults.standard.bool(forKey: "batteryCutoffEnabled") }
+        set { UserDefaults.standard.set(newValue, forKey: "batteryCutoffEnabled") }
+    }
+    var batteryCutoffPercent: Int {
+        get { (UserDefaults.standard.object(forKey: "batteryCutoffPercent") as? Int) ?? 20 }
+        set { UserDefaults.standard.set(newValue, forKey: "batteryCutoffPercent") }
+    }
+
     let watchedAppsKey = "watchedAppBundleIDs"
     var watchedAppBundleIDs: [String] {
         get { UserDefaults.standard.stringArray(forKey: watchedAppsKey) ?? [] }
@@ -306,6 +326,7 @@ final class SleepManager {
         startActivityMonitor()
         startNetworkMonitor()
         startDownloadWatcher()
+        startThermalMonitor()
 
         checkStatus()
     }
@@ -472,6 +493,47 @@ final class SleepManager {
         }
     }
 
+    // MARK: - Thermal guard
+
+    func startThermalMonitor() {
+        ThermalMonitor.shared.start { [weak self] state in
+            Task { @MainActor in self?.checkThermal(state) }
+        }
+        checkThermal(ThermalMonitor.shared.currentState)
+    }
+
+    private func checkThermal(_ state: ProcessInfo.ThermalState) {
+        guard thermalGuardEnabled, isSleepDisabled, !isToggling else { return }
+        guard ThermalMonitor.isHot(state, criticalOnly: thermalGuardCriticalOnly) else { return }
+        clearSession()
+        Task {
+            await setSleepDisabled(false)
+            sendNotification(
+                title: "Sleep Prevention Disabled",
+                body: "Your Mac is running hot. Sleep prevention paused for safety."
+            )
+        }
+    }
+
+    // MARK: - Low-battery cutoff
+
+    /// Disables sleep prevention when on battery at or below the cutoff.
+    /// Called from the power-change callback and the app's 30s tick (battery %
+    /// drifts without firing a power event).
+    func checkBatteryCutoff() {
+        guard batteryCutoffEnabled, isSleepDisabled, !isToggling else { return }
+        guard !PowerMonitor.shared.isOnACPower else { return }
+        guard let pct = PowerMonitor.shared.batteryPercent, pct <= batteryCutoffPercent else { return }
+        clearSession()
+        Task {
+            await setSleepDisabled(false)
+            sendNotification(
+                title: "Sleep Prevention Disabled",
+                body: "Battery at \(pct)% (cutoff \(batteryCutoffPercent)%)."
+            )
+        }
+    }
+
     // MARK: - Observers
 
     private func setupTerminationObserver() {
@@ -494,7 +556,9 @@ final class SleepManager {
     private func setupPowerMonitor() {
         PowerMonitor.shared.start { [weak self] isOnAC in
             Task { @MainActor in
-                guard let self, self.requireCharging, self.isSleepDisabled else { return }
+                guard let self else { return }
+                self.checkBatteryCutoff()
+                guard self.requireCharging, self.isSleepDisabled else { return }
                 if !isOnAC {
                     // Unplugged — auto-deactivate
                     self.durationTask?.cancel()
@@ -924,6 +988,7 @@ final class SleepManager {
         if useCaffeinate {
             await setSleepDisabledCaffeinate(disabled)
             isSleepDisabled = disabled
+            Watchdog.shared.stop() // caffeinate mode never needs the watchdog
             return
         }
 
@@ -960,6 +1025,13 @@ final class SleepManager {
 
         let value = disabled ? "1" : "0"
         await runSudoPmset(args: ["-a", "disablesleep", value])
+
+        // Crash safety net (pmset mode only): restore sleep if we're killed.
+        if disabled {
+            Watchdog.shared.start()
+        } else {
+            Watchdog.shared.stop()
+        }
     }
 
     private func setSleepDisabledCaffeinate(_ enabled: Bool) async {

@@ -28,6 +28,12 @@ You choose how long to keep it on — indefinitely, for 30 minutes, or for a few
 - **While charging only** — automatically disable sleep prevention on battery
 - **Caffeinate mode** — use `caffeinate` instead of `pmset` (no `sudo` required)
 
+### Safety
+- **Thermal guard** — auto-pause sleep prevention when the Mac runs hot (trip at serious or critical heat); important for lid-closed sessions under load
+- **Low-battery cutoff** — on battery, disable at a chosen percent (5–50%) so a session can't drain the battery flat
+- **Crash watchdog** — a detached process restores normal sleep if Insomniac is force-quit or crashes, so the Mac can't get stuck awake (pmset mode)
+- **Automatic update check** — checks GitHub Releases on launch and from the menu; points you at the download, no background installer
+
 ### Cursor tools
 - **Mouse jiggler** — subtly moves the cursor while a sleep-prevention session is active, keeping presence/status apps green
 - **Auto clicker** — periodically clicks a chosen screen location (left/right/middle/double), with smooth human-like motion and optional cursor return
@@ -148,6 +154,8 @@ Accessible from the context menu or with `⌘,`.
 | **General** | Quick-start toggle style | Choose whether left-click toggles or opens the menu |
 | **General** | Only while on AC power | Auto-disable on battery |
 | **General** | Use caffeinate mode | Use `caffeinate` instead of `pmset` (skips the `sudo` prompt) |
+| **General** | Safety | Thermal guard (serious/critical) + low-battery cutoff percent |
+| **General** | Updates | Check for updates now / check automatically on launch |
 | **General** | Lid & Display | Dim only on battery / skip dim when an external display is connected |
 | **General** | Welcome Guide / Export / Import | Re-open onboarding, back up or restore settings as a `.plist` |
 | **Session Defaults** | Default duration | 30m / 1h / 3h / 8h / Indefinite |
