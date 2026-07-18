@@ -53,6 +53,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             sleepManager.enableSleep(duration: sleepManager.defaultDuration)
         }
 
+        #if DEBUG
+        UpdateChecker.selfCheck()
+        #endif
+        if UpdateChecker.autoCheckOnLaunch {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
+                UpdateChecker.checkForUpdates(silent: true)
+            }
+        }
+
         if sleepManager.isFirstLaunch {
             OnboardingManager.shared.show { [weak self] in
                 self?.sleepManager.markFirstLaunchComplete()
@@ -163,8 +172,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         tooltipTimer?.invalidate()
         tooltipTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
             Task { @MainActor in
-                self?.updateIcon()
-                self?.updateTooltip()
+                guard let self else { return }
+                self.updateIcon()
+                self.updateTooltip()
+                if self.sleepManager.isSleepDisabled && !self.sleepManager.useCaffeinate {
+                    Watchdog.shared.beat()
+                }
+                self.sleepManager.checkBatteryCutoff()
             }
         }
     }
@@ -274,6 +288,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(.separator())
 
+        let updates = NSMenuItem(title: "Check for Updates\u{2026}", action: #selector(checkForUpdates), keyEquivalent: "")
+        updates.target = self
+        updates.image = NSImage(systemSymbolName: "arrow.down.circle", accessibilityDescription: nil)
+        menu.addItem(updates)
+
         let version = appVersionString()
         let about = NSMenuItem(title: "About Insomniac \(version)", action: #selector(showAbout), keyEquivalent: "")
         about.target = self
@@ -321,6 +340,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(.separator())
 
+        let updates = NSMenuItem(title: "Check for Updates\u{2026}", action: #selector(checkForUpdates), keyEquivalent: "")
+        updates.target = self
+        updates.image = NSImage(systemSymbolName: "arrow.down.circle", accessibilityDescription: nil)
+        menu.addItem(updates)
+
         let version = appVersionString()
         let about = NSMenuItem(title: "About Insomniac \(version)", action: #selector(showAbout), keyEquivalent: "")
         about.target = self
@@ -360,6 +384,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func disableSleepAction() {
         sleepManager.disableSleep()
+    }
+
+    @objc private func checkForUpdates() {
+        UpdateChecker.checkForUpdates(silent: false)
     }
 
     @objc private func openSettings() {
