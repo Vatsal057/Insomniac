@@ -192,14 +192,36 @@ struct SettingsView: View {
                     VStack(alignment: .leading, spacing: 12) {
                         Picker("Default Duration Shortcut:", selection: Binding(
                             get: { currentDefaultOption() },
-                            set: { sleepManager.defaultDuration = $0.seconds }
+                            set: { option in
+                                if option.id == "custom" {
+                                    // Default to 45 minutes if they just selected "Custom..."
+                                    if sleepManager.defaultDuration == nil || SleepManager.DurationOption.presets.contains(where: { $0.seconds == sleepManager.defaultDuration }) {
+                                        sleepManager.defaultDuration = 45 * 60
+                                    }
+                                } else {
+                                    sleepManager.defaultDuration = option.seconds
+                                }
+                            }
                         )) {
                             Text("Indefinitely").tag(SleepManager.DurationOption.indefinite)
                             ForEach(SleepManager.DurationOption.presets) { option in
                                 Text(option.title).tag(option)
                             }
+                            Text("Custom...").tag(SleepManager.DurationOption.custom)
                         }
                         .pickerStyle(.menu)
+
+                        if currentDefaultOption().id.starts(with: "custom") {
+                            HStack {
+                                Text("Duration (minutes):")
+                                TextField("", value: Binding(
+                                    get: { Int((sleepManager.defaultDuration ?? (45 * 60)) / 60) },
+                                    set: { sleepManager.defaultDuration = TimeInterval(max(1, $0) * 60) }
+                                ), format: .number)
+                                .textFieldStyle(.roundedBorder)
+                                .frame(width: 80)
+                            }
+                        }
 
                         Toggle("Auto-deactivate when device is put to sleep manually", isOn: $sleepManager.autoDeactivateOnSleep)
                     }
@@ -611,6 +633,9 @@ struct SettingsView: View {
         if let current,
            let match = SleepManager.DurationOption.presets.first(where: { $0.seconds == current }) {
             return match
+        }
+        if current != nil {
+            return SleepManager.DurationOption.custom
         }
         return .indefinite
     }

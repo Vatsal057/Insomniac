@@ -116,6 +116,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         handleURL(url)
     }
 
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if sleepManager.isSleepDisabled {
+            Task {
+                await sleepManager.setSleepDisabled(false)
+                NSApplication.shared.reply(toApplicationShouldTerminate: true)
+            }
+            return .terminateLater
+        }
+        return .terminateNow
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         tooltipTimer?.invalidate()
         MouseManager.shared.stop()
@@ -267,6 +278,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if option.seconds == sleepManager.defaultDuration {
                 item.state = .on
             }
+            submenu.addItem(item)
+        }
+        
+        if let defaultDuration = sleepManager.defaultDuration,
+           !SleepManager.DurationOption.presets.contains(where: { $0.seconds == defaultDuration }) {
+            let customOption = SleepManager.DurationOption.custom(seconds: defaultDuration)
+            let item = NSMenuItem(
+                title: customOption.title,
+                action: #selector(enableWithDuration(_:)),
+                keyEquivalent: ""
+            )
+            item.target = self
+            item.representedObject = customOption.seconds
+            item.state = .on
             submenu.addItem(item)
         }
 

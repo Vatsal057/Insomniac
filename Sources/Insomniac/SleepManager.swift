@@ -24,6 +24,22 @@ final class SleepManager {
         static let presets: [DurationOption] = [
             .thirtyMinutes, .oneHour, .threeHours, .eightHours
         ]
+        
+        static let custom = DurationOption(id: "custom", title: "Custom...", seconds: -1)
+
+        static func custom(seconds: TimeInterval) -> DurationOption {
+            let minutes = Int(seconds / 60)
+            let hours = minutes / 60
+            let title: String
+            if hours > 0 && minutes % 60 == 0 {
+                title = "\(hours) hour\(hours > 1 ? "s" : "")"
+            } else if hours > 0 {
+                title = "\(hours)h \(minutes % 60)m"
+            } else {
+                title = "\(minutes) minute\(minutes > 1 ? "s" : "")"
+            }
+            return DurationOption(id: "custom_\(seconds)", title: title, seconds: seconds)
+        }
     }
 
     private(set) var isSleepDisabled: Bool = false {
@@ -560,12 +576,8 @@ final class SleepManager {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor in
-                guard let self else { return }
-                self.caffeinateProcess?.terminate()
-                self.caffeinateProcess = nil
-                if self.isSleepDisabled {
-                    await self.setSleepDisabled(false)
-                }
+                self?.caffeinateProcess?.terminate()
+                self?.caffeinateProcess = nil
             }
         }
     }
@@ -825,7 +837,11 @@ final class SleepManager {
     private func scheduleDurationExpiration(duration: TimeInterval) {
         durationTask = Task { [weak self] in
             do {
-                try await Task.sleep(nanoseconds: UInt64(duration * 1_000_000_000))
+                while true {
+                    guard let self, self.isSleepDisabled, let until = self.sleepDisabledUntil else { return }
+                    if Date() >= until { break }
+                    try await Task.sleep(nanoseconds: 1_000_000_000)
+                }
                 guard let self, self.isSleepDisabled else { return }
                 self.sleepDisabledUntil = nil
                 await self.setSleepDisabled(false)
