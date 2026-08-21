@@ -132,6 +132,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Task { @MainActor in
                 self?.updateIcon()
                 self?.updateTooltip()
+                self?.startTooltipTimer()
                 self?.observeState()
             }
         }
@@ -139,7 +140,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func updateIcon() {
         if let button = statusItem.button {
-            let name = sleepManager.isSleepDisabled ? "bolt.fill" : "moon.zzz.fill"
+            let name = sleepManager.isSleepDisabled ? "eye" : "eye.slash"
             button.image = NSImage(systemSymbolName: name, accessibilityDescription: "Insomniac")
 
             if sleepManager.isSleepDisabled, let remaining = sleepManager.formatRemainingTime() {
@@ -148,7 +149,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     string: " " + remaining,
                     attributes: [
                         .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium),
-                        .foregroundColor: NSColor.systemOrange
+                        .foregroundColor: Brand.activeNS
                     ]
                 )
             } else {
@@ -170,12 +171,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func startTooltipTimer() {
         tooltipTimer?.invalidate()
+        tooltipTimer = nil
+
+        // Only run the repeating timer when there's actual work to do:
+        // countdown display, watchdog heartbeats, or battery cutoff checks.
+        guard sleepManager.isSleepDisabled else { return }
+
         tooltipTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
                 self.updateIcon()
                 self.updateTooltip()
-                if self.sleepManager.isSleepDisabled && !self.sleepManager.useCaffeinate {
+                if !self.sleepManager.useCaffeinate {
                     Watchdog.shared.beat()
                 }
                 self.sleepManager.checkBatteryCutoff()
@@ -232,7 +239,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             "Sleep Prevention: OFF",
             color: .secondaryLabelColor
         )
-        status.image = NSImage(systemSymbolName: "moon.zzz.fill", accessibilityDescription: nil)
+        status.image = NSImage(systemSymbolName: "eye.slash", accessibilityDescription: nil)
         menu.addItem(status)
 
         menu.addItem(.separator())
@@ -316,8 +323,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let status = NSMenuItem(title: statusText, action: nil, keyEquivalent: "")
         status.isEnabled = false
-        status.attributedTitle = styledTitle(statusText, color: .systemOrange)
-        status.image = NSImage(systemSymbolName: "bolt.fill", accessibilityDescription: nil)
+        status.attributedTitle = styledTitle(statusText, color: Brand.activeNS)
+        status.image = NSImage(systemSymbolName: "eye", accessibilityDescription: nil)
         menu.addItem(status)
 
         menu.addItem(.separator())
@@ -402,31 +409,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.title = "Insomniac Settings"
         window.isReleasedWhenClosed = false
         window.styleMask = [.titled, .closable, .resizable]
-        window.setContentSize(NSSize(width: 520, height: 520))
-        window.minSize = NSSize(width: 500, height: 450)
+        window.setContentSize(NSSize(width: 560, height: 700))
+        window.minSize = NSSize(width: 500, height: 560)
         window.center()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         settingsWindow = window
     }
 
+    private var aboutWindow: NSWindow?
+
     @objc private func showAbout() {
-        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
-        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"
+        if let existing = aboutWindow, existing.isVisible {
+            existing.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
 
-        let alert = NSAlert()
-        alert.messageText = "Insomniac"
-        alert.informativeText = """
-            Version \(version) (\(build))
+        let view = AboutView { [weak self] in
+            self?.aboutWindow?.close()
+            self?.aboutWindow = nil
+        }
 
-            A macOS menu bar app that keeps your Mac awake, \
-            even with the lid closed.
-
-            Built with Swift and IOKit.
-            """
-        alert.icon = NSImage(systemSymbolName: "bolt.fill", accessibilityDescription: nil)
-        alert.addButton(withTitle: "OK")
-        alert.runModal()
+        let hosting = NSHostingController(rootView: view)
+        let window = NSWindow(contentViewController: hosting)
+        window.title = "About Insomniac"
+        window.styleMask = [.titled, .closable]
+        window.isReleasedWhenClosed = false
+        window.setContentSize(NSSize(width: 380, height: 320))
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        aboutWindow = window
     }
 
 }
@@ -437,5 +451,52 @@ extension URL {
             .queryItems?
             .first(where: { $0.name == name })?
             .value
+    }
+}
+
+struct AboutView: View {
+    let onClose: () -> Void
+
+    var versionString: String {
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
+        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"
+        return "Version \(version) (\(build))"
+    }
+
+    var body: some View {
+        VStack(spacing: 18) {
+            BrandEyeIcon(size: 80)
+
+            VStack(spacing: 4) {
+                Text("Insomniac")
+                    .font(.system(size: 22, weight: .bold, design: .rounded))
+
+                Text(versionString)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+
+            Text("A calm, lightweight macOS menu bar utility that keeps your Mac awake — even with the lid closed.")
+                .font(.callout)
+                .multilineTextAlignment(.center)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 16)
+
+            HStack(spacing: 12) {
+                Button("GitHub Repository") {
+                    if let url = URL(string: "https://github.com/Vatsal057/Insomniac") {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+
+                Button("Close") {
+                    onClose()
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+            .padding(.top, 4)
+        }
+        .padding(24)
+        .frame(width: 380, height: 320)
     }
 }

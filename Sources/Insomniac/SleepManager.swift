@@ -258,11 +258,21 @@ final class SleepManager {
         }
     }
 
+    private var lastFolderModDate: Date?
+
     private func checkDownloads() {
         guard downloadWatcherEnabled, !isToggling else { return }
 
         let path = downloadWatcherPath
         guard !path.isEmpty, FileManager.default.fileExists(atPath: path) else { return }
+
+        if let attrs = try? FileManager.default.attributesOfItem(atPath: path),
+           let modDate = attrs[.modificationDate] as? Date {
+            if let lastMod = lastFolderModDate, lastMod == modDate {
+                return
+            }
+            lastFolderModDate = modDate
+        }
 
         do {
             let files = try FileManager.default.contentsOfDirectory(atPath: path)
@@ -352,8 +362,10 @@ final class SleepManager {
 
     func startSchedule() {
         scheduleTimer?.invalidate()
+        scheduleTimer = nil
         // Seed false so enabling the schedule mid-window activates immediately.
         wasInScheduledWindow = false
+        guard scheduleEnabled else { return }
         scheduleTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.checkSchedule()
@@ -413,6 +425,7 @@ final class SleepManager {
 
     func startActivityMonitor() {
         activityTimer?.invalidate()
+        activityTimer = nil
         guard activityBasedEnabled else { return }
 
         activityTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
@@ -458,6 +471,8 @@ final class SleepManager {
     // MARK: - Network monitor
 
     func startNetworkMonitor() {
+        NetworkMonitor.shared.stop()
+        guard networkBasedEnabled, !watchedNetworks.isEmpty else { return }
         NetworkMonitor.shared.start { [weak self] ssid in
             Task { @MainActor in
                 self?.checkNetwork(ssid: ssid)
@@ -496,6 +511,8 @@ final class SleepManager {
     // MARK: - Thermal guard
 
     func startThermalMonitor() {
+        ThermalMonitor.shared.stop()
+        guard thermalGuardEnabled else { return }
         ThermalMonitor.shared.start { [weak self] state in
             Task { @MainActor in self?.checkThermal(state) }
         }

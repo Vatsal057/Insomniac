@@ -92,6 +92,8 @@ final class MouseManager {
         set { UserDefaults.standard.set(newValue, forKey: Self.clickTypeKey) }
     }
 
+    private var defaultsObservations: [NSKeyValueObservation] = []
+
     private init() {
         let defaults: [String: Any] = [
             Self.jigglerEnabledKey: false,
@@ -106,16 +108,6 @@ final class MouseManager {
             Self.clickTypeKey: "left"
         ]
         UserDefaults.standard.register(defaults: defaults)
-
-        NotificationCenter.default.addObserver(
-            forName: UserDefaults.didChangeNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor in
-                self?.updateTimerState()
-            }
-        }
     }
 
     /// The jiggler/clicker only runs while a sleep-prevention session is
@@ -144,15 +136,8 @@ final class MouseManager {
             )
         }
 
-        // Trigger evaluation once immediately
         Task { @MainActor in
             await self.evaluateAndPerformAction()
-        }
-
-        timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                await self?.evaluateAndPerformAction()
-            }
         }
     }
 
@@ -169,22 +154,44 @@ final class MouseManager {
         }
     }
 
-    func evaluateAndPerformAction() async {
-        guard SleepManager.shared.isSleepDisabled else { return }
-
-        // Idle Check
-        if onlyWhenIdle {
-            let idle = ActivityMonitor.shared.systemIdleTime
-            guard idle >= inactivityDelay else {
-                return // Not idle long enough
+    private func scheduleNextCheck(after delay: TimeInterval) {
+        timer?.invalidate()
+        let clampedDelay = max(1.0, delay)
+        timer = Timer.scheduledTimer(withTimeInterval: clampedDelay, repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                await self?.evaluateAndPerformAction()
             }
+        }
+    }
+
+    func evaluateAndPerformAction() async {
+        guard SleepManager.shared.isSleepDisabled else {
+            stop()
+            return
         }
 
         let now = Date()
-        if now.timeIntervalSince(lastActionTime) >= interval {
+        var nextCheckDelay: TimeInterval = interval
+
+        if onlyWhenIdle {
+            let idle = ActivityMonitor.shared.systemIdleTime
+            if idle < inactivityDelay {
+                nextCheckDelay = max(1.0, inactivityDelay - idle)
+                scheduleNextCheck(after: nextCheckDelay)
+                return
+            }
+        }
+
+        let elapsed = now.timeIntervalSince(lastActionTime)
+        if elapsed >= interval {
             lastActionTime = now
             await performAction()
+            nextCheckDelay = interval
+        } else {
+            nextCheckDelay = interval - elapsed
         }
+
+        scheduleNextCheck(after: nextCheckDelay)
     }
 
     func performAction() async {

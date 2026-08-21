@@ -65,7 +65,7 @@ struct OnboardingView: View {
                 HStack(spacing: 6) {
                     ForEach(0..<pageCount, id: \.self) { index in
                         Circle()
-                            .fill(index == page ? Color.accentColor : Color.secondary.opacity(0.3))
+                            .fill(index == page ? Brand.color : Color.secondary.opacity(0.3))
                             .frame(width: 7, height: 7)
                     }
                 }
@@ -87,17 +87,16 @@ struct OnboardingView: View {
     }
 
     private var welcomePage: some View {
-        VStack(spacing: 18) {
-            Image(systemName: "moon.zzz.fill")
-                .font(.system(size: 56))
-                .foregroundStyle(.orange)
+        VStack(spacing: 20) {
+            BrandEyeIcon(size: 96)
+
             Text("Welcome to Insomniac")
-                .font(.largeTitle.bold())
+                .font(.system(size: 26, weight: .bold, design: .rounded))
             Text("Insomniac keeps your Mac awake — for downloads, builds, presentations, or anything that shouldn't be interrupted. It even works with the lid closed.")
                 .font(.body)
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
-                .frame(maxWidth: 400)
+                .frame(maxWidth: 420)
             Text("It lives entirely in your menu bar. No dock icon, no clutter.")
                 .font(.callout)
                 .multilineTextAlignment(.center)
@@ -177,10 +176,14 @@ struct OnboardingView: View {
 
     private func onboardingRow(icon: String, title: String, detail: String) -> some View {
         HStack(alignment: .top, spacing: 14) {
-            Image(systemName: icon)
-                .font(.system(size: 22))
-                .foregroundStyle(Color.accentColor)
-                .frame(width: 30)
+            ZStack {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Brand.subtle)
+                    .frame(width: 36, height: 36)
+                Image(systemName: icon)
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(Brand.color)
+            }
             VStack(alignment: .leading, spacing: 3) {
                 Text(title)
                     .font(.headline)

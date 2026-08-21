@@ -27,11 +27,18 @@ final class ActivityMonitor {
 
     private var previousActiveTicks: UInt64 = 0
     private var previousIdleTicks: UInt64 = 0
+    private var lastCpuSampleTime: Date?
+    private var cachedCpuPercent: Double = 0.0
 
     /// Returns current CPU usage as a percentage (0-100), measured as the
     /// delta since the previous call (host_processor_info ticks are
-    /// cumulative since boot). The first call returns the boot-average.
+    /// cumulative since boot). Cached for 2 seconds to optimize performance.
     var cpuUsagePercent: Double {
+        let now = Date()
+        if let lastSample = lastCpuSampleTime, now.timeIntervalSince(lastSample) < 2.0 {
+            return cachedCpuPercent
+        }
+
         var processorInfoArray: processor_info_array_t?
         var processorMsgCount: mach_msg_type_number_t = 0
         var processorCount: natural_t = 0
@@ -45,7 +52,7 @@ final class ActivityMonitor {
         )
 
         guard result == KERN_SUCCESS, let infoArray = processorInfoArray else {
-            return 0
+            return cachedCpuPercent
         }
 
         defer {
@@ -70,7 +77,13 @@ final class ActivityMonitor {
         previousActiveTicks = totalActive
         previousIdleTicks = totalIdle
 
-        guard totalDelta > 0, activeDelta <= totalDelta else { return 0 }
-        return Double(activeDelta) / Double(totalDelta) * 100.0
+        lastCpuSampleTime = now
+        guard totalDelta > 0, activeDelta <= totalDelta else {
+            cachedCpuPercent = 0.0
+            return 0.0
+        }
+        let calculated = Double(activeDelta) / Double(totalDelta) * 100.0
+        cachedCpuPercent = calculated
+        return calculated
     }
 }

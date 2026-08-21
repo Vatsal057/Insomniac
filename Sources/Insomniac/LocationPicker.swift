@@ -95,36 +95,38 @@ struct PickerOverlayView: View {
     
     var body: some View {
         ZStack {
-            Color.black.opacity(0.1)
+            Color.black.opacity(0.15)
             
-            VStack(spacing: 16) {
-                Image(systemName: "hand.tap")
-                    .font(.system(size: 36))
-                    .foregroundStyle(.orange)
+            VStack(spacing: 14) {
+                ZStack {
+                    Circle()
+                        .fill(Brand.subtle)
+                        .frame(width: 54, height: 54)
+                    Image(systemName: "hand.tap.fill")
+                        .font(.system(size: 28))
+                        .foregroundStyle(Brand.color)
+                }
                 
                 Text("Select Click Location")
-                    .font(.headline)
-                    .foregroundStyle(.white)
+                    .font(.title3.bold())
+                    .foregroundStyle(.primary)
                 
                 Text("Click anywhere on the screen to set the target.")
                     .font(.subheadline)
-                    .foregroundStyle(.white.opacity(0.8))
+                    .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                 
                 Text("Press ESC to cancel")
                     .font(.caption)
-                    .foregroundStyle(.white.opacity(0.5))
+                    .foregroundStyle(.tertiary)
             }
             .padding(24)
-            .background(
-                RoundedRectangle(cornerRadius: 16)
-                    .fill(Color(NSColor.windowBackgroundColor).opacity(0.85))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 16)
-                            .stroke(Color.white.opacity(0.15), lineWidth: 1)
-                    )
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .stroke(Color.primary.opacity(0.1), lineWidth: 1)
             )
-            .shadow(color: .black.opacity(0.3), radius: 10, x: 0, y: 5)
+            .shadow(color: .black.opacity(0.25), radius: 12, x: 0, y: 6)
             .frame(maxWidth: 320)
         }
         .edgesIgnoringSafeArea(.all)

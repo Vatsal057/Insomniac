@@ -7,7 +7,7 @@ import Network
 final class NetworkMonitor {
     static let shared = NetworkMonitor()
 
-    private let monitor = NWPathMonitor()
+    private var monitor: NWPathMonitor?
     private let monitorQueue = DispatchQueue(label: "com.insomniac.networkmonitor")
 
     private var onChange: ((String?) -> Void)?
@@ -19,6 +19,8 @@ final class NetworkMonitor {
     /// Returns the current Wi-Fi SSID, or nil if not connected to Wi-Fi.
     /// Tries each Wi-Fi interface reported by `networksetup -listallhardwareports`
     /// and returns the first one that has an active SSID.
+    private var cachedInterfaces: [String]?
+
     var currentSSID: String? {
         let interfaces = listWiFiInterfaces()
         for interface in interfaces {
@@ -29,7 +31,22 @@ final class NetworkMonitor {
         return nil
     }
 
+    func fetchCurrentSSID() async -> String? {
+        await Task.detached(priority: .utility) { [weak self] in
+            guard let self else { return nil }
+            let interfaces = self.listWiFiInterfaces()
+            for interface in interfaces {
+                if let ssid = self.ssidForInterface(interface) {
+                    return ssid
+                }
+            }
+            return nil
+        }.value
+    }
+
     private func listWiFiInterfaces() -> [String] {
+        if let cached = cachedInterfaces { return cached }
+
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/sbin/networksetup")
         process.arguments = ["-listallhardwareports"]
@@ -42,7 +59,7 @@ final class NetworkMonitor {
             try process.run()
             process.waitUntilExit()
         } catch {
-            return ["en0"]  // sensible default
+            return ["en0"]
         }
 
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
@@ -64,7 +81,9 @@ final class NetworkMonitor {
                 }
             }
         }
-        return interfaces.isEmpty ? ["en0"] : interfaces
+        let result = interfaces.isEmpty ? ["en0"] : interfaces
+        cachedInterfaces = result
+        return result
     }
 
     private func ssidForInterface(_ interface: String) -> String? {
@@ -86,7 +105,6 @@ final class NetworkMonitor {
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         guard let output = String(data: data, encoding: .utf8) else { return nil }
 
-        // Output: "Current Wi-Fi Network: MyNetwork\n" or "You are not associated with an AirPort network.\n"
         if let range = output.range(of: ": "),
            let newlineRange = output[range.upperBound...].range(of: "\n") {
             let ssid = String(output[range.upperBound..<newlineRange.lowerBound])
@@ -95,40 +113,36 @@ final class NetworkMonitor {
         return nil
     }
 
-    /// Start monitoring. The callback fires on the main queue with the current SSID
-    /// (or nil if not on Wi-Fi) whenever the network changes.
     func start(onChange: @escaping (String?) -> Void) {
+        stop()
         self.onChange = onChange
 
-        // Detect network path changes (Wi-Fi join/leave)
-        monitor.pathUpdateHandler = { [weak self] _ in
+        let newMonitor = NWPathMonitor()
+        newMonitor.pathUpdateHandler = { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
-                // Small delay to let Wi-Fi association settle
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
-                self.pollAndNotify()
+                await self.pollAndNotify()
             }
         }
-        monitor.start(queue: monitorQueue)
+        newMonitor.start(queue: monitorQueue)
+        monitor = newMonitor
 
-        // Poll every 30s as a safety net (network state can change without
-        // NWPathMonitor firing — e.g. switching to same BSSID)
         pollTimer?.invalidate()
         pollTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
             Task { @MainActor in
-                self?.pollAndNotify()
+                await self?.pollAndNotify()
             }
         }
 
-        // Fire immediately
         Task { @MainActor in
-            self.pollAndNotify()
+            await self.pollAndNotify()
         }
     }
 
     @MainActor
-    private func pollAndNotify() {
-        let ssid = currentSSID
+    private func pollAndNotify() async {
+        let ssid = await fetchCurrentSSID()
         if ssid != lastSSID {
             lastSSID = ssid
             onChange?(ssid)
@@ -136,7 +150,8 @@ final class NetworkMonitor {
     }
 
     func stop() {
-        monitor.cancel()
+        monitor?.cancel()
+        monitor = nil
         pollTimer?.invalidate()
         pollTimer = nil
     }
