@@ -6,6 +6,9 @@ final class PowerMonitor {
     static let shared = PowerMonitor()
 
     private var runLoopSource: Unmanaged<CFRunLoopSource>?
+    /// The +1 handed to `IOPSNotificationCreateRunLoopSource` as its refcon.
+    /// Held so `stop()` can balance it instead of leaking the callback box.
+    private var callbackContext: Unmanaged<PowerCallbackContext>?
 
     private init() {}
 
@@ -74,6 +77,7 @@ final class PowerMonitor {
 
         CFRunLoopAddSource(CFRunLoopGetMain(), source, .defaultMode)
         runLoopSource = Unmanaged.passRetained(source)
+        callbackContext = Unmanaged<PowerCallbackContext>.fromOpaque(opaque)
     }
 
     func stop() {
@@ -81,6 +85,10 @@ final class PowerMonitor {
             CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .defaultMode)
         }
         runLoopSource = nil
+        // Released only after the source is off the run loop, so the callback
+        // can't fire against a freed box.
+        callbackContext?.release()
+        callbackContext = nil
     }
 
     deinit {

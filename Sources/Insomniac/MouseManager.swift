@@ -1,7 +1,9 @@
 import Foundation
 import CoreGraphics
 import AppKit
+import ApplicationServices
 import OSLog
+import UserNotifications
 
 @Observable @MainActor
 final class MouseManager {
@@ -123,6 +125,23 @@ final class MouseManager {
 
     private var activity: NSObjectProtocol?
     private var lastActionTime: Date = Date.distantPast
+    private var hasWarnedAboutAccessibility = false
+
+    /// `CGEvent.post` is silently dropped without Accessibility access, so
+    /// without this the jiggler looks enabled and simply never does anything.
+    /// Warn once per launch rather than on every tick.
+    private func warnIfNotTrusted() {
+        guard !AXIsProcessTrusted(), !hasWarnedAboutAccessibility else { return }
+        hasWarnedAboutAccessibility = true
+        logger.error("Accessibility access not granted — synthetic mouse events will be ignored.")
+
+        let content = UNMutableNotificationContent()
+        content.title = "Cursor Tools Need Accessibility"
+        content.body = "Grant Insomniac Accessibility access in System Settings › Privacy & Security, or the jiggler and clicker won't move the cursor."
+        UNUserNotificationCenter.current().add(
+            UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+        )
+    }
 
     private func start() {
         timer?.invalidate()
@@ -130,11 +149,16 @@ final class MouseManager {
         logger.info("Starting mouse activity timer (action interval: \(self.interval)s)")
 
         if activity == nil {
+            // `.latencyCritical` disables timer coalescing and pins the CPU to a
+            // high-performance state. This does a few CGEvent posts a minute —
+            // `.userInitiated` is enough to stay scheduled, without the drain.
             activity = ProcessInfo.processInfo.beginActivity(
-                options: [.userInitiated, .latencyCritical],
+                options: [.userInitiated],
                 reason: "Mouse Jiggler/Clicker Active"
             )
         }
+
+        warnIfNotTrusted()
 
         Task { @MainActor in
             await self.evaluateAndPerformAction()
@@ -258,61 +282,56 @@ final class MouseManager {
             // Warp the cursor position on the screen (does not require accessibility permission)
             CGWarpMouseCursorPosition(point)
 
-            // Also post a session event to notify OS of movement
+            // Post at the HID level only. An event posted there already flows
+            // down through the session tap to every app, so posting to both
+            // delivers the same movement twice.
             let moveEvent = CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left)
-            moveEvent?.post(tap: .cgSessionEventTap)
-            moveEvent?.post(tap: .cghidEventTap) // Also post to HID event tap to keep presence apps awake
+            moveEvent?.post(tap: .cghidEventTap)
 
             try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+        }
+    }
+
+    /// Posts one down/up pair at the HID tap.
+    ///
+    /// Only `.cghidEventTap` — an event posted there is already delivered to
+    /// every app via the session tap, so posting to both taps turns one click
+    /// into two (and the double-click case into four).
+    private func postClickPair(
+        down: CGEventType,
+        up: CGEventType,
+        button: CGMouseButton,
+        at target: CGPoint,
+        clickState: Int64? = nil
+    ) {
+        for type in [down, up] {
+            guard let event = CGEvent(
+                mouseEventSource: nil,
+                mouseType: type,
+                mouseCursorPosition: target,
+                mouseButton: button
+            ) else { continue }
+            if let clickState {
+                event.setIntegerValueField(.mouseEventClickState, value: clickState)
+            }
+            event.post(tap: .cghidEventTap)
         }
     }
 
     private func postClick(at target: CGPoint) {
         switch clickType {
         case "left":
-            let clickDown = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: target, mouseButton: .left)
-            clickDown?.post(tap: .cgSessionEventTap)
-            clickDown?.post(tap: .cghidEventTap)
-            let clickUp = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: target, mouseButton: .left)
-            clickUp?.post(tap: .cgSessionEventTap)
-            clickUp?.post(tap: .cghidEventTap)
+            postClickPair(down: .leftMouseDown, up: .leftMouseUp, button: .left, at: target)
 
         case "right":
-            let clickDown = CGEvent(mouseEventSource: nil, mouseType: .rightMouseDown, mouseCursorPosition: target, mouseButton: .right)
-            clickDown?.post(tap: .cgSessionEventTap)
-            clickDown?.post(tap: .cghidEventTap)
-            let clickUp = CGEvent(mouseEventSource: nil, mouseType: .rightMouseUp, mouseCursorPosition: target, mouseButton: .right)
-            clickUp?.post(tap: .cgSessionEventTap)
-            clickUp?.post(tap: .cghidEventTap)
+            postClickPair(down: .rightMouseDown, up: .rightMouseUp, button: .right, at: target)
 
         case "middle":
-            let clickDown = CGEvent(mouseEventSource: nil, mouseType: .otherMouseDown, mouseCursorPosition: target, mouseButton: .center)
-            clickDown?.post(tap: .cgSessionEventTap)
-            clickDown?.post(tap: .cghidEventTap)
-            let clickUp = CGEvent(mouseEventSource: nil, mouseType: .otherMouseUp, mouseCursorPosition: target, mouseButton: .center)
-            clickUp?.post(tap: .cgSessionEventTap)
-            clickUp?.post(tap: .cghidEventTap)
+            postClickPair(down: .otherMouseDown, up: .otherMouseUp, button: .center, at: target)
 
         case "double":
-            let clickDown1 = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: target, mouseButton: .left)
-            clickDown1?.setIntegerValueField(.mouseEventClickState, value: 1)
-            clickDown1?.post(tap: .cgSessionEventTap)
-            clickDown1?.post(tap: .cghidEventTap)
-
-            let clickUp1 = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: target, mouseButton: .left)
-            clickUp1?.setIntegerValueField(.mouseEventClickState, value: 1)
-            clickUp1?.post(tap: .cgSessionEventTap)
-            clickUp1?.post(tap: .cghidEventTap)
-
-            let clickDown2 = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: target, mouseButton: .left)
-            clickDown2?.setIntegerValueField(.mouseEventClickState, value: 2)
-            clickDown2?.post(tap: .cgSessionEventTap)
-            clickDown2?.post(tap: .cghidEventTap)
-
-            let clickUp2 = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: target, mouseButton: .left)
-            clickUp2?.setIntegerValueField(.mouseEventClickState, value: 2)
-            clickUp2?.post(tap: .cgSessionEventTap)
-            clickUp2?.post(tap: .cghidEventTap)
+            postClickPair(down: .leftMouseDown, up: .leftMouseUp, button: .left, at: target, clickState: 1)
+            postClickPair(down: .leftMouseDown, up: .leftMouseUp, button: .left, at: target, clickState: 2)
 
         default:
             break

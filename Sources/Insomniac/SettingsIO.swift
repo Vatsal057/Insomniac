@@ -10,19 +10,15 @@ enum SettingsIO {
         "useCaffeinateMode",
         "requireCharging",
         "watchedAppBundleIDs",
-        "watchedNetworks",
         "scheduleEnabled",
         "scheduleStartHour",
         "scheduleStartMinute",
         "scheduleEndHour",
         "scheduleEndMinute",
         "scheduleDays",
-        "networkBasedEnabled",
         "dimOnBatteryOnly",
         "skipDimOnExternalDisplay",
-        "activityBasedEnabled",
-        "activityThresholdPercent",
-        "activityIdleTimeoutSeconds",
+        "showMenuBarCountdown",
         "mouseJigglerEnabled",
         "mouseClickerEnabled",
         "mouseJigglerInterval",
@@ -89,17 +85,26 @@ enum SettingsIO {
                 return
             }
 
-            // Only accept known keys so a crafted plist can't pollute defaults.
-            for (key, value) in plist where keys.contains(key) {
+            // Only accept known keys, and only the type each key is actually
+            // read back as. A key allowlist alone still lets a crafted plist
+            // park a wrong-typed value in defaults, where the getters silently
+            // fall back to a default and the setting looks broken.
+            let allowed = Set(keys)
+            var imported = 0
+            for (key, value) in plist where allowed.contains(key) {
+                guard isExpectedType(value, forKey: key) else { continue }
                 UserDefaults.standard.set(value, forKey: key)
+                imported += 1
+            }
+            guard imported > 0 else {
+                showError("The selected file didn't contain any recognizable Insomniac settings.")
+                return
             }
 
             // Restart every monitor so imported triggers take effect immediately.
             Task { @MainActor in
                 let manager = SleepManager.shared
                 manager.startSchedule()
-                manager.startActivityMonitor()
-                manager.startNetworkMonitor()
                 manager.startDownloadWatcher()
                 manager.updateWatchedApps()
                 MouseManager.shared.updateTimerState()
@@ -113,6 +118,30 @@ enum SettingsIO {
         } catch {
             showError("Failed to import settings: \(error.localizedDescription)")
         }
+    }
+
+    /// Keys whose value must be an array of strings; everything else is a
+    /// number, a bool, or a string.
+    private static let stringArrayKeys: Set<String> = [
+        "watchedAppBundleIDs"
+    ]
+    private static let intArrayKeys: Set<String> = ["scheduleDays"]
+    private static let stringKeys: Set<String> = [
+        "quickStartToggleStyle", "downloadWatcherPath", "mouseJigglerClickType"
+    ]
+
+    private static func isExpectedType(_ value: Any, forKey key: String) -> Bool {
+        if stringArrayKeys.contains(key) {
+            return (value as? [Any])?.allSatisfy { $0 is String } ?? false
+        }
+        if intArrayKeys.contains(key) {
+            return (value as? [Any])?.allSatisfy { $0 is NSNumber } ?? false
+        }
+        if stringKeys.contains(key) {
+            return value is String
+        }
+        // Bools bridge to NSNumber in a plist, so numbers cover both.
+        return value is NSNumber
     }
 
     private static func showError(_ message: String) {

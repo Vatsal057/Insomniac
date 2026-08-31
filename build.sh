@@ -15,9 +15,21 @@ echo "📦 Creating Insomniac.app bundle..."
 rm -rf Insomniac.app
 mkdir -p Insomniac.app/Contents/MacOS Insomniac.app/Contents/Resources
 
-# Derive version/build from git if available, else fall back to 1.0 / 1
-VERSION=$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')
+# Derive version/build from git if available, else fall back to 1.0 / 1.
+#
+# Only version-shaped tags count. `git describe --tags` returns whatever tag is
+# most recent, so a non-release tag would land in CFBundleShortVersionString —
+# and UpdateChecker parses that string, so a non-numeric version reads as 0 and
+# every release then looks like an available update, forever.
+VERSION=$(git tag --list 'v[0-9]*' --sort=-version:refname 2>/dev/null | head -1 | sed 's/^v//')
+if [ -z "$VERSION" ]; then
+    VERSION=$(git tag --list '[0-9]*' --sort=-version:refname 2>/dev/null | head -1)
+fi
 VERSION=${VERSION:-1.0}
+if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+(\.[0-9]+)*$'; then
+    echo "⚠️  Ignoring non-numeric version tag '$VERSION'; using 1.0"
+    VERSION=1.0
+fi
 BUILD=$(git rev-list --count HEAD 2>/dev/null || echo "1")
 YEAR=$(date +%Y)
 

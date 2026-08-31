@@ -62,6 +62,32 @@ final class SleepManager {
 
     private(set) var sleepDisabledUntil: Date?
 
+    /// What started the current session.
+    ///
+    /// Every automatic trigger used to end *any* active session, not just its
+    /// own. Two triggers that disagree — a scheduled window that wants the Mac
+    /// awake while the activity monitor sees an idle machine — would then flip
+    /// the session on and off against each other every tick, with a
+    /// notification and a system sound each time. Worse, an automatic trigger
+    /// could quietly cancel a session the user had started by hand.
+    ///
+    /// So an automatic trigger may only switch off what it switched on.
+    /// Safety cutoffs (thermal, low battery, unplugged, system sleep) and
+    /// anything the user does are exempt and always win.
+    enum SessionOwner: Equatable {
+        case manual
+        case schedule
+        case watchedApp
+        case download
+    }
+
+    private(set) var sessionOwner: SessionOwner?
+
+    /// True when `owner` is allowed to end the current session.
+    private func canRelinquish(_ owner: SessionOwner) -> Bool {
+        sessionOwner == owner
+    }
+
     var remainingTime: TimeInterval? {
         guard let until = sleepDisabledUntil else { return nil }
         let remaining = until.timeIntervalSinceNow
@@ -78,6 +104,50 @@ final class SleepManager {
         durationTask?.cancel()
         durationTask = nil
         sleepDisabledUntil = nil
+    }
+
+    /// Runs one automatic on/off transition, serialized against every other
+    /// trigger.
+    ///
+    /// The `!isToggling` checks scattered through the trigger callbacks read the
+    /// flag but never set it, so two triggers firing in the same tick both got
+    /// through and raced their `setSleepDisabled` calls. Routing them all
+    /// through here makes the flag mean what it says.
+    private func performAutomatic(
+        enable: Bool,
+        owner: SessionOwner,
+        title: String,
+        body: String
+    ) async {
+        guard !isToggling else { return }
+        if enable {
+            guard !isSleepDisabled else { return }
+        } else {
+            guard isSleepDisabled, canRelinquish(owner) else { return }
+        }
+
+        isToggling = true
+        clearSession()
+        await setSleepDisabled(enable)
+        isToggling = false
+
+        // `setSleepDisabled` refuses to claim a session pmset wouldn't grant,
+        // so only report what actually happened.
+        guard isSleepDisabled == enable else { return }
+        sessionOwner = enable ? owner : nil
+        sendNotification(title: title, body: body)
+    }
+
+    /// Ends the session regardless of who started it. For safety cutoffs and
+    /// user-initiated changes.
+    private func forceDisable(title: String, body: String) async {
+        guard isSleepDisabled else { return }
+        isToggling = true
+        clearSession()
+        await setSleepDisabled(false)
+        isToggling = false
+        sessionOwner = nil
+        sendNotification(title: title, body: body)
     }
 
     let autoDeactivateKey = "autoDeactivateOnSleep"
@@ -169,31 +239,15 @@ final class SleepManager {
         set { UserDefaults.standard.set(Array(newValue), forKey: "scheduleDays") }
     }
 
-    // Activity-based
-    let activityBasedEnabledKey = "activityBasedEnabled"
-    var activityBasedEnabled: Bool {
-        get { UserDefaults.standard.bool(forKey: activityBasedEnabledKey) }
-        set { UserDefaults.standard.set(newValue, forKey: activityBasedEnabledKey) }
-    }
-    var activityThresholdPercent: Int {
-        get { (UserDefaults.standard.object(forKey: "activityThresholdPercent") as? Int) ?? 25 }
-        set { UserDefaults.standard.set(newValue, forKey: "activityThresholdPercent") }
-    }
-    var activityIdleTimeoutSeconds: Int {
-        get { (UserDefaults.standard.object(forKey: "activityIdleTimeoutSeconds") as? Int) ?? 60 }
-        set { UserDefaults.standard.set(newValue, forKey: "activityIdleTimeoutSeconds") }
-    }
+    // The CPU/activity trigger was removed. There is no "CPU went above 25%"
+    // notification to subscribe to, so it had to sample every 30s — an app
+    // spending CPU to measure CPU, forever, to decide something the user can
+    // express far more cheaply with the app-watch or download triggers.
 
-    // Network (SSID)
-    let networkBasedEnabledKey = "networkBasedEnabled"
-    var networkBasedEnabled: Bool {
-        get { UserDefaults.standard.bool(forKey: networkBasedEnabledKey) }
-        set { UserDefaults.standard.set(newValue, forKey: networkBasedEnabledKey) }
-    }
-    var watchedNetworks: [String] {
-        get { (UserDefaults.standard.array(forKey: "watchedNetworks") as? [String]) ?? [] }
-        set { UserDefaults.standard.set(newValue, forKey: "watchedNetworks") }
-    }
+    // The Wi-Fi (SSID) trigger was removed. macOS offers no cheap event for
+    // "the network changed name", so it had to poll — and each poll forked
+    // /usr/sbin/networksetup twice. That was by far the most expensive thing
+    // in the app, running every 30s for as long as it was switched on.
 
     // Power-event exclusions
     var dimOnBatteryOnly: Bool {
@@ -210,6 +264,17 @@ final class SleepManager {
     var startSessionOnLaunch: Bool {
         get { UserDefaults.standard.bool(forKey: startSessionOnLaunchKey) }
         set { UserDefaults.standard.set(newValue, forKey: startSessionOnLaunchKey) }
+    }
+
+    /// Show a live countdown next to the menu bar icon.
+    ///
+    /// Off by default, because it's the only thing left in the app that needs a
+    /// repeating timer. With it off, an active session costs nothing and the
+    /// remaining time is still visible in the menu.
+    let showMenuBarCountdownKey = "showMenuBarCountdown"
+    var showMenuBarCountdown: Bool {
+        get { UserDefaults.standard.bool(forKey: showMenuBarCountdownKey) }
+        set { UserDefaults.standard.set(newValue, forKey: showMenuBarCountdownKey) }
     }
 
     // Quick-Start Toggle Action
@@ -244,29 +309,36 @@ final class SleepManager {
         }
     }
 
-    private var downloadWatcherTimer: Timer?
+    /// Watches the folder for changes instead of re-reading it on a timer.
+    ///
+    /// This used to poll every 5 seconds forever, which was the app's most
+    /// frequent wake-up by a wide margin. The kernel already knows when a
+    /// directory changes and will say so, so there's no reason to keep asking.
+    private var downloadWatcher: FolderWatcher?
     private var isDownloadingHeld = false
 
     func startDownloadWatcher() {
-        downloadWatcherTimer?.invalidate()
+        downloadWatcher = nil
         guard downloadWatcherEnabled else { return }
 
-        downloadWatcherTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                self?.checkDownloads()
-            }
+        let path = downloadWatcherPath
+        guard !path.isEmpty else { return }
+
+        downloadWatcher = FolderWatcher(path: path) { [weak self] in
+            self?.checkDownloads()
         }
+        // One read now to catch a download already in flight.
         checkDownloads()
     }
 
     func stopDownloadWatcher() {
-        downloadWatcherTimer?.invalidate()
-        downloadWatcherTimer = nil
+        downloadWatcher = nil
         if isDownloadingHeld {
             isDownloadingHeld = false
             Task {
-                await setSleepDisabled(false)
-                sendNotification(
+                await performAutomatic(
+                    enable: false,
+                    owner: .download,
                     title: "Sleep Prevention Disabled",
                     body: "Downloads completed."
                 )
@@ -274,21 +346,11 @@ final class SleepManager {
         }
     }
 
-    private var lastFolderModDate: Date?
-
     private func checkDownloads() {
         guard downloadWatcherEnabled, !isToggling else { return }
 
         let path = downloadWatcherPath
         guard !path.isEmpty, FileManager.default.fileExists(atPath: path) else { return }
-
-        if let attrs = try? FileManager.default.attributesOfItem(atPath: path),
-           let modDate = attrs[.modificationDate] as? Date {
-            if let lastMod = lastFolderModDate, lastMod == modDate {
-                return
-            }
-            lastFolderModDate = modDate
-        }
 
         do {
             let files = try FileManager.default.contentsOfDirectory(atPath: path)
@@ -303,8 +365,9 @@ final class SleepManager {
             if activeDownload && !isSleepDisabled && !isDownloadingHeld {
                 isDownloadingHeld = true
                 Task {
-                    await setSleepDisabled(true)
-                    sendNotification(
+                    await performAutomatic(
+                        enable: true,
+                        owner: .download,
                         title: "Sleep Prevention Enabled",
                         body: "Active download detected in watched folder."
                     )
@@ -312,8 +375,9 @@ final class SleepManager {
             } else if !activeDownload && isDownloadingHeld {
                 isDownloadingHeld = false
                 Task {
-                    await setSleepDisabled(false)
-                    sendNotification(
+                    await performAutomatic(
+                        enable: false,
+                        owner: .download,
                         title: "Sleep Prevention Disabled",
                         body: "Downloads completed."
                     )
@@ -346,11 +410,10 @@ final class SleepManager {
 
         setupTerminationObserver()
         setupSleepNotificationObserver()
+        setupClockChangeObserver()
         setupPowerMonitor()
         setupAppMonitor()
         startSchedule()
-        startActivityMonitor()
-        startNetworkMonitor()
         startDownloadWatcher()
         startThermalMonitor()
 
@@ -376,37 +439,91 @@ final class SleepManager {
     private var scheduleTimer: Timer?
     private var wasInScheduledWindow = false
 
+    /// Arms a single timer for the next window boundary.
+    ///
+    /// This used to tick every 60 seconds just to compare the clock — 1,440
+    /// wake-ups a day to notice at most two transitions. Now it works out when
+    /// the next edge actually is and sleeps until then.
     func startSchedule() {
         scheduleTimer?.invalidate()
         scheduleTimer = nil
         // Seed false so enabling the schedule mid-window activates immediately.
         wasInScheduledWindow = false
         guard scheduleEnabled else { return }
-        scheduleTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+        checkSchedule()
+        armScheduleTimer()
+    }
+
+    private func armScheduleTimer() {
+        scheduleTimer?.invalidate()
+        scheduleTimer = nil
+        guard scheduleEnabled else { return }
+
+        guard let next = nextScheduleBoundary(after: Date()) else {
+            // No days selected, so no boundary will ever arrive. Nothing to arm;
+            // toggling a day re-runs startSchedule().
+            return
+        }
+
+        // A minute past the edge, so rounding can't land us just before it and
+        // read the old state.
+        let fireAt = max(next.timeIntervalSinceNow + 1, 1)
+        let timer = Timer.scheduledTimer(withTimeInterval: fireAt, repeats: false) { [weak self] _ in
             Task { @MainActor in
-                self?.checkSchedule()
+                guard let self else { return }
+                self.checkSchedule()
+                self.armScheduleTimer()
             }
         }
-        checkSchedule()
+        // Generous slack: macOS can fold this into a wake it was making anyway.
+        timer.tolerance = 30
+        scheduleTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    /// The next moment the in-window answer changes, searching forward up to a
+    /// week. Returns nil when no day is selected.
+    ///
+    /// Built from `Calendar` date components rather than by adding seconds, so
+    /// daylight-saving transitions land on the right wall-clock time.
+    func nextScheduleBoundary(after now: Date) -> Date? {
+        guard !scheduleDays.isEmpty else { return nil }
+        let calendar = Calendar.current
+        let start = (hour: scheduleStartHour, minute: scheduleStartMinute)
+        let end = (hour: scheduleEndHour, minute: scheduleEndMinute)
+
+        var candidates: [Date] = []
+        // Today plus the next 7 days covers every weekday, and covers a window
+        // whose end falls on the day after its start.
+        for dayOffset in 0...7 {
+            guard let day = calendar.date(byAdding: .day, value: dayOffset, to: now) else { continue }
+            for edge in [start, end] {
+                guard let edgeDate = calendar.date(
+                    bySettingHour: edge.hour, minute: edge.minute, second: 0, of: day
+                ) else { continue }
+                if edgeDate > now { candidates.append(edgeDate) }
+            }
+        }
+        return candidates.min()
     }
 
     private func checkSchedule() {
         guard scheduleEnabled else { return }
         let inWindow = isInScheduledWindow()
-        if inWindow && !wasInScheduledWindow && !isSleepDisabled && !isToggling {
-            clearSession()
+        if inWindow && !wasInScheduledWindow {
             Task {
-                await setSleepDisabled(true)
-                sendNotification(
+                await performAutomatic(
+                    enable: true,
+                    owner: .schedule,
                     title: "Sleep Prevention Enabled",
                     body: "Scheduled window started."
                 )
             }
-        } else if !inWindow && wasInScheduledWindow && isSleepDisabled {
-            clearSession()
+        } else if !inWindow && wasInScheduledWindow {
             Task {
-                await setSleepDisabled(false)
-                sendNotification(
+                await performAutomatic(
+                    enable: false,
+                    owner: .schedule,
                     title: "Sleep Prevention Disabled",
                     body: "Scheduled window ended."
                 )
@@ -435,95 +552,6 @@ final class SleepManager {
         }
     }
 
-    // MARK: - Activity monitor
-
-    private var activityTimer: Timer?
-
-    func startActivityMonitor() {
-        activityTimer?.invalidate()
-        activityTimer = nil
-        guard activityBasedEnabled else { return }
-
-        activityTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                self?.checkActivity()
-            }
-        }
-        checkActivity()
-    }
-
-    private func checkActivity() {
-        guard activityBasedEnabled, !isToggling else { return }
-
-        let cpu = ActivityMonitor.shared.cpuUsagePercent
-        let idle = ActivityMonitor.shared.systemIdleTime
-        let threshold = Double(activityThresholdPercent)
-        let idleTimeout = TimeInterval(activityIdleTimeoutSeconds)
-
-        let isActive = cpu >= threshold || idle < idleTimeout
-
-        if isActive && !isSleepDisabled {
-            if requireCharging && !PowerMonitor.shared.isOnACPower { return }
-            clearSession()
-            Task {
-                await setSleepDisabled(true)
-                sendNotification(
-                    title: "Sleep Prevention Enabled",
-                    body: "Activity detected (CPU \(Int(cpu))%)."
-                )
-            }
-        } else if !isActive && isSleepDisabled {
-            clearSession()
-            Task {
-                await setSleepDisabled(false)
-                sendNotification(
-                    title: "Sleep Prevention Disabled",
-                    body: "System has been idle."
-                )
-            }
-        }
-    }
-
-    // MARK: - Network monitor
-
-    func startNetworkMonitor() {
-        NetworkMonitor.shared.stop()
-        guard networkBasedEnabled, !watchedNetworks.isEmpty else { return }
-        NetworkMonitor.shared.start { [weak self] ssid in
-            Task { @MainActor in
-                self?.checkNetwork(ssid: ssid)
-            }
-        }
-        checkNetwork(ssid: NetworkMonitor.shared.currentSSID)
-    }
-
-    private func checkNetwork(ssid: String?) {
-        guard networkBasedEnabled, !isToggling else { return }
-
-        let isOnWatchedNetwork = ssid.map { watchedNetworks.contains($0) } ?? false
-
-        if isOnWatchedNetwork && !isSleepDisabled {
-            if requireCharging && !PowerMonitor.shared.isOnACPower { return }
-            clearSession()
-            Task {
-                await setSleepDisabled(true)
-                sendNotification(
-                    title: "Sleep Prevention Enabled",
-                    body: "Connected to \(ssid ?? "watched network")."
-                )
-            }
-        } else if !isOnWatchedNetwork && isSleepDisabled {
-            clearSession()
-            Task {
-                await setSleepDisabled(false)
-                sendNotification(
-                    title: "Sleep Prevention Disabled",
-                    body: ssid.map { "Switched to \($0)." } ?? "Disconnected from Wi-Fi."
-                )
-            }
-        }
-    }
-
     // MARK: - Thermal guard
 
     func startThermalMonitor() {
@@ -538,10 +566,9 @@ final class SleepManager {
     private func checkThermal(_ state: ProcessInfo.ThermalState) {
         guard thermalGuardEnabled, isSleepDisabled, !isToggling else { return }
         guard ThermalMonitor.isHot(state, criticalOnly: thermalGuardCriticalOnly) else { return }
-        clearSession()
+        // A safety cutoff overrides whoever owns the session, including the user.
         Task {
-            await setSleepDisabled(false)
-            sendNotification(
+            await forceDisable(
                 title: "Sleep Prevention Disabled",
                 body: "Your Mac is running hot. Sleep prevention paused for safety."
             )
@@ -557,10 +584,9 @@ final class SleepManager {
         guard batteryCutoffEnabled, isSleepDisabled, !isToggling else { return }
         guard !PowerMonitor.shared.isOnACPower else { return }
         guard let pct = PowerMonitor.shared.batteryPercent, pct <= batteryCutoffPercent else { return }
-        clearSession()
+        // Safety cutoff — overrides the session owner.
         Task {
-            await setSleepDisabled(false)
-            sendNotification(
+            await forceDisable(
                 title: "Sleep Prevention Disabled",
                 body: "Battery at \(pct)% (cutoff \(batteryCutoffPercent)%)."
             )
@@ -589,12 +615,9 @@ final class SleepManager {
                 self.checkBatteryCutoff()
                 guard self.requireCharging, self.isSleepDisabled else { return }
                 if !isOnAC {
-                    // Unplugged — auto-deactivate
-                    self.durationTask?.cancel()
-                    self.durationTask = nil
-                    self.sleepDisabledUntil = nil
-                    await self.setSleepDisabled(false)
-                    self.sendNotification(
+                    // Unplugged — the user asked for AC-only, so this overrides
+                    // whoever owns the session.
+                    await self.forceDisable(
                         title: "Sleep Prevention Disabled",
                         body: "Unplugged. Battery preservation enabled."
                     )
@@ -609,11 +632,10 @@ final class SleepManager {
             onAnyWatchedRunning: { [weak self] in
                 Task { @MainActor in
                     guard let self else { return }
-                    guard !self.isSleepDisabled, !self.isToggling else { return }
                     if self.requireCharging && !PowerMonitor.shared.isOnACPower { return }
-                    self.clearSession()
-                    await self.setSleepDisabled(true)
-                    self.sendNotification(
+                    await self.performAutomatic(
+                        enable: true,
+                        owner: .watchedApp,
                         title: "Sleep Prevention Enabled",
                         body: "A watched app is running."
                     )
@@ -622,15 +644,45 @@ final class SleepManager {
             onAllWatchedGone: { [weak self] in
                 Task { @MainActor in
                     guard let self else { return }
-                    guard self.isSleepDisabled, self.watchedAppBundleIDs.count > 0 else { return }
-                    self.clearSession()
-                    await self.setSleepDisabled(false)
-                    self.sendNotification(
+                    guard !self.watchedAppBundleIDs.isEmpty else { return }
+                    await self.performAutomatic(
+                        enable: false,
+                        owner: .watchedApp,
                         title: "Sleep Prevention Disabled",
                         body: "All watched apps have closed."
                     )
                 }
             }
+        )
+    }
+
+    /// Re-arms the schedule timer whenever the clock it was measured against
+    /// moves.
+    ///
+    /// The timer now waits hours rather than a minute, and `Timer` counts
+    /// elapsed time, not wall-clock time. So a system sleep, a timezone change,
+    /// or an NTP correction would all leave it aimed at the wrong moment. These
+    /// are all notifications, so noticing costs nothing.
+    private func setupClockChangeObserver() {
+        let rearm: @Sendable (Notification) -> Void = { [weak self] _ in
+            Task { @MainActor in
+                guard let self, self.scheduleEnabled else { return }
+                self.checkSchedule()
+                self.armScheduleTimer()
+            }
+        }
+
+        for name in [NSNotification.Name.NSSystemClockDidChange,
+                     NSNotification.Name.NSSystemTimeZoneDidChange] {
+            NotificationCenter.default.addObserver(
+                forName: name, object: nil, queue: .main, using: rearm
+            )
+        }
+
+        // Waking from sleep is the common case: the deadline slipped by however
+        // long the Mac was asleep.
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main, using: rearm
         )
     }
 
@@ -644,6 +696,7 @@ final class SleepManager {
                 guard let self, self.autoDeactivateOnSleep, self.isSleepDisabled else { return }
                 self.clearSession()
                 await self.setSleepDisabled(false)
+                self.sessionOwner = nil
             }
         }
     }
@@ -794,12 +847,16 @@ final class SleepManager {
             guard isSleepDisabled else {
                 // Permission was denied — don't claim success.
                 sleepDisabledUntil = nil
+                sessionOwner = nil
                 sendNotification(
                     title: "Could Not Enable Sleep Prevention",
                     body: "Insomniac needs permission to run pmset."
                 )
                 return
             }
+
+            // Claimed by the user, so no automatic trigger may end it.
+            sessionOwner = .manual
 
             if let duration, duration > 0 {
                 scheduleDurationExpiration(duration: duration)
@@ -827,6 +884,7 @@ final class SleepManager {
             await setSleepDisabled(false)
             isToggling = false
             guard !isSleepDisabled else { return }
+            sessionOwner = nil
             sendNotification(
                 title: "Sleep Prevention Disabled",
                 body: "Your Mac can now sleep normally."
@@ -834,17 +892,30 @@ final class SleepManager {
         }
     }
 
+    /// Waits out a timed session, then restores sleep.
+    ///
+    /// Sleeps until the deadline in one go rather than waking every second to
+    /// compare two dates — an 8-hour session was ~28,800 pointless wake-ups, and
+    /// the menu bar only ever displays whole minutes anyway. The loop remains
+    /// because `Task.sleep` measures elapsed time, not wall-clock time, so a
+    /// system sleep mid-countdown can return early; when that happens it just
+    /// waits again for whatever is left.
     private func scheduleDurationExpiration(duration: TimeInterval) {
         durationTask = Task { [weak self] in
             do {
                 while true {
                     guard let self, self.isSleepDisabled, let until = self.sleepDisabledUntil else { return }
-                    if Date() >= until { break }
-                    try await Task.sleep(nanoseconds: 1_000_000_000)
+                    let remaining = until.timeIntervalSinceNow
+                    if remaining <= 0 { break }
+                    // Cap each wait so a very long session still re-checks the
+                    // wall clock periodically.
+                    let slice = min(remaining, 15 * 60)
+                    try await Task.sleep(nanoseconds: UInt64(slice * 1_000_000_000))
                 }
                 guard let self, self.isSleepDisabled else { return }
                 self.sleepDisabledUntil = nil
                 await self.setSleepDisabled(false)
+                self.sessionOwner = nil
                 self.sendNotification(
                     title: "Sleep Prevention Expired",
                     body: "Your Mac can now sleep normally."
@@ -1001,10 +1072,53 @@ final class SleepManager {
         return result
     }
 
+    /// A login name we're willing to splice into a root shell command.
+    ///
+    /// Everything below runs through `do shell script … with administrator
+    /// privileges`, so an unescaped quote or `$(…)` in the name would be
+    /// arbitrary code execution as root. Rather than try to escape for two
+    /// nested languages (AppleScript string, then sh), refuse anything that
+    /// isn't a plain POSIX login name.
+    static func isSafeLoginName(_ name: String) -> Bool {
+        guard !name.isEmpty, name.count <= 32 else { return false }
+        guard let first = name.first, first.isLetter || first == "_" else { return false }
+        return name.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "_" || $0 == "-") }
+    }
+
+    /// Grants a passwordless `sudo pmset` rule, once, behind an admin prompt.
+    ///
+    /// The rule is staged under a filename sudo deliberately ignores (names
+    /// containing a `.` are skipped inside `sudoers.d`), validated with
+    /// `visudo -c`, and only then moved into place. Writing an unvalidated file
+    /// straight to `/etc/sudoers.d` risks a parse error that breaks `sudo` for
+    /// the whole machine — a much worse outcome than failing to update.
     private func requestPermissions() async -> Bool {
         let username = NSUserName()
+        guard Self.isSafeLoginName(username) else {
+            logger.error("Refusing to write a sudoers rule for an unexpected login name.")
+            return false
+        }
+
+        let final = "/etc/sudoers.d/insomniac"
+        // Contains a dot, so sudo skips it while it exists — a half-written
+        // staging file can never affect sudo's behaviour.
+        let staged = "\(final).staging"
+        let rule = "\(username) ALL=(ALL) NOPASSWD: /usr/bin/pmset"
+
+        // No backslashes anywhere below: this string is parsed first by
+        // AppleScript (where a backslash escapes) and only then by sh.
+        let command = [
+            "/bin/mkdir -p /etc/sudoers.d",
+            "/bin/echo '\(rule)' > '\(staged)'",
+            "/bin/chmod 0440 '\(staged)'",
+            "/usr/sbin/chown root:wheel '\(staged)'",
+            // Validate before it can ever be parsed as policy.
+            "/usr/sbin/visudo -cf '\(staged)'",
+            "/bin/mv '\(staged)' '\(final)'",
+        ].joined(separator: " && ") + " || { /bin/rm -f '\(staged)'; exit 1; }"
+
         let scriptSource = """
-        do shell script "mkdir -p /etc/sudoers.d && echo '\(username) ALL=(ALL) NOPASSWD: /usr/bin/pmset' > /etc/sudoers.d/insomniac && chmod 0440 /etc/sudoers.d/insomniac" with administrator privileges
+        do shell script "\(command)" with administrator privileges
         """
 
         return await Task.detached(priority: .userInitiated) {
@@ -1017,9 +1131,43 @@ final class SleepManager {
         }.value
     }
 
+    /// Removes the passwordless `sudo pmset` rule this app installed.
+    ///
+    /// The grant outlives the app bundle, so there has to be a way back out of
+    /// it that doesn't involve hand-editing `/etc/sudoers.d` in a terminal.
+    @discardableResult
+    func revokePermissions() async -> Bool {
+        let script = """
+        do shell script "/bin/rm -f /etc/sudoers.d/insomniac /etc/sudoers.d/insomniac.staging" with administrator privileges
+        """
+        let removed = await Task.detached(priority: .userInitiated) {
+            var error: NSDictionary?
+            if let applescript = NSAppleScript(source: script) {
+                applescript.executeAndReturnError(&error)
+                return error == nil
+            }
+            return false
+        }.value
+
+        if removed { _hasSudoPermissions = nil }
+        return removed
+    }
+
+    /// True when a passwordless `sudo pmset` rule is currently installed.
+    func hasInstalledSudoersRule() -> Bool {
+        FileManager.default.fileExists(atPath: "/etc/sudoers.d/insomniac")
+    }
+
     func setSleepDisabled(_ disabled: Bool) async {
         if useCaffeinate {
-            await setSleepDisabledCaffeinate(disabled)
+            let ok = await setSleepDisabledCaffeinate(disabled)
+            // Turning prevention *off* always succeeds — the process is gone
+            // either way. Only a failed launch means we aren't holding it.
+            guard ok || !disabled else {
+                isSleepDisabled = false
+                Watchdog.shared.stop()
+                return
+            }
             isSleepDisabled = disabled
             Watchdog.shared.stop() // caffeinate mode never needs the watchdog
             return
@@ -1027,6 +1175,16 @@ final class SleepManager {
 
         let hasPerms = await hasPermissions()
         if !hasPerms {
+            // Only ever prompt to *start* a session. Turning prevention off
+            // without the grant is a no-op anyway (nothing set the flag), and
+            // asking here would pop an admin dialog during app termination.
+            guard disabled else {
+                isSleepDisabled = false
+                sleepDisabledUntil = nil
+                sessionOwner = nil
+                Watchdog.shared.stop()
+                return
+            }
             let requested = await requestPermissions()
             guard requested else {
                 logger.error("Failed to acquire required permissions.")
@@ -1057,7 +1215,20 @@ final class SleepManager {
         }
 
         let value = disabled ? "1" : "0"
-        await runSudoPmset(args: ["-a", "disablesleep", value])
+        let applied = await runSudoPmset(args: ["-a", "disablesleep", value])
+
+        // `pmset` is the thing that actually holds the machine awake. If it
+        // refused (sudoers rule removed behind our back, pmset unavailable),
+        // reporting success would leave the menu bar claiming a session that
+        // doesn't exist — and the Mac would sleep mid-download.
+        if disabled && !applied {
+            logger.error("pmset refused to set disablesleep; not claiming a session.")
+            isSleepDisabled = false
+            sleepDisabledUntil = nil
+            sessionOwner = nil
+            Watchdog.shared.stop()
+            return
+        }
 
         // Crash safety net (pmset mode only): restore sleep if we're killed.
         if disabled {
@@ -1067,11 +1238,13 @@ final class SleepManager {
         }
     }
 
-    private func setSleepDisabledCaffeinate(_ enabled: Bool) async {
+    /// Returns true when the requested state is actually in effect.
+    @discardableResult
+    private func setSleepDisabledCaffeinate(_ enabled: Bool) async -> Bool {
         caffeinateProcess?.terminate()
         caffeinateProcess = nil
 
-        guard enabled else { return }
+        guard enabled else { return true }
 
         let process = await Task.detached(priority: .userInitiated) { () -> Process? in
             let process = Process()
@@ -1087,7 +1260,11 @@ final class SleepManager {
 
         guard let process else {
             logger.error("Failed to launch caffeinate")
-            return
+            sendNotification(
+                title: "Could Not Enable Sleep Prevention",
+                body: "Insomniac couldn't start caffeinate."
+            )
+            return false
         }
 
         caffeinateProcess = process
@@ -1101,6 +1278,8 @@ final class SleepManager {
                     self.caffeinateProcess = nil
                     if self.isSleepDisabled {
                         self.isSleepDisabled = false
+                        self.clearSession()
+                        self.sessionOwner = nil
                         self.sendNotification(
                             title: "Sleep Prevention Disabled",
                             body: "The caffeinate process ended unexpectedly."
@@ -1109,5 +1288,15 @@ final class SleepManager {
                 }
             }
         }
+
+        // `terminationHandler` is only wired up after `run()`, so a process
+        // that died in between would never report back. Catch that here.
+        if !process.isRunning && process.terminationStatus != 0 {
+            caffeinateProcess = nil
+            logger.error("caffeinate exited immediately (status \(process.terminationStatus)).")
+            return false
+        }
+
+        return true
     }
 }

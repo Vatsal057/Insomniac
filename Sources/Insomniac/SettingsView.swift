@@ -10,7 +10,7 @@ struct SettingsView: View {
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var autoCheckUpdates = UpdateChecker.autoCheckOnLaunch
     @State private var watchedApps: [WatchedApp] = []
-    @State private var newNetworkName = ""
+
     @State private var isAccessibilityTrusted = AXIsProcessTrusted()
 
     struct WatchedApp: Identifiable {
@@ -106,6 +106,22 @@ struct SettingsView: View {
                         Text("Caffeinate mode prevents idle sleep only. It does not keep your Mac awake when the lid is closed.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
+
+                        Divider()
+
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Passwordless pmset access")
+                                .font(.callout.weight(.medium))
+                            Text("pmset mode installs one sudoers rule (`/etc/sudoers.d/insomniac`) so Insomniac can toggle sleep without asking for your password each time. It stays on this Mac until you remove it — even if you delete the app.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+
+                            Button("Remove sudoers Rule\u{2026}") {
+                                revokeSudoersRule()
+                            }
+                            .controlSize(.small)
+                        }
                     }
                 }
 
@@ -443,43 +459,6 @@ struct SettingsView: View {
                     }
                 }
 
-                settingsSection(title: "Activity Detection", systemImage: "waveform.path.ecg") {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Toggle("Keep awake while CPU or system is active", isOn: $sleepManager.activityBasedEnabled)
-                            .onChange(of: sleepManager.activityBasedEnabled) { _, _ in
-                                sleepManager.startActivityMonitor()
-                            }
-
-                        if sleepManager.activityBasedEnabled {
-                            HStack {
-                                Text("CPU threshold:")
-                                    .font(.subheadline)
-                                Slider(value: Binding(
-                                    get: { Double(sleepManager.activityThresholdPercent) },
-                                    set: { sleepManager.activityThresholdPercent = Int($0) }
-                                ), in: 5...95, step: 5)
-                                Text("\(sleepManager.activityThresholdPercent)%")
-                                    .font(.system(.body, design: .monospaced))
-                                    .frame(width: 48, alignment: .trailing)
-                                    .foregroundStyle(.secondary)
-                            }
-
-                            HStack {
-                                Text("Idle timeout:")
-                                    .font(.subheadline)
-                                Slider(value: Binding(
-                                    get: { Double(sleepManager.activityIdleTimeoutSeconds) },
-                                    set: { sleepManager.activityIdleTimeoutSeconds = Int($0) }
-                                ), in: 30...900, step: 30)
-                                Text(formatIdleTimeout(TimeInterval(sleepManager.activityIdleTimeoutSeconds)))
-                                    .font(.system(.body, design: .monospaced))
-                                    .frame(width: 60, alignment: .trailing)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                    }
-                }
-
                 settingsSection(title: "File Download Watcher", systemImage: "arrow.down.circle.fill") {
                     VStack(alignment: .leading, spacing: 10) {
                         Toggle("Enable File Download Watcher", isOn: $sleepManager.downloadWatcherEnabled)
@@ -541,42 +520,44 @@ struct SettingsView: View {
                     }
                 }
 
-                settingsSection(title: "Wi-Fi Network Triggers", systemImage: "wifi") {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Toggle("Keep awake on selected Wi-Fi networks", isOn: $sleepManager.networkBasedEnabled)
-                            .onChange(of: sleepManager.networkBasedEnabled) { _, _ in
-                                sleepManager.startNetworkMonitor()
-                            }
-
-                        if sleepManager.networkBasedEnabled {
-                            HStack {
-                                TextField("SSID / Network Name", text: $newNetworkName)
-                                    .textFieldStyle(.roundedBorder)
-                                    .onSubmit(addNetwork)
-                                Button("Add") { addNetwork() }
-                                    .disabled(newNetworkName.trimmingCharacters(in: .whitespaces).isEmpty)
-                            }
-
-                            ForEach(sleepManager.watchedNetworks, id: \.self) { network in
-                                HStack {
-                                    Image(systemName: "wifi")
-                                        .foregroundStyle(.secondary)
-                                    Text(network)
-                                    Spacer()
-                                    Button {
-                                        removeNetwork(network)
-                                    } label: {
-                                        Image(systemName: "minus.circle.fill")
-                                            .foregroundStyle(.secondary)
-                                    }
-                                    .buttonStyle(.plain)
-                                }
-                            }
-                        }
-                    }
-                }
             }
             .padding(12)
+        }
+    }
+
+    // MARK: - Actions
+
+    private func revokeSudoersRule() {
+        guard sleepManager.hasInstalledSudoersRule() else {
+            let info = NSAlert()
+            info.messageText = "Nothing to remove"
+            info.informativeText = "No Insomniac sudoers rule is installed on this Mac."
+            info.addButton(withTitle: "OK")
+            info.runModal()
+            return
+        }
+
+        let confirm = NSAlert()
+        confirm.messageText = "Remove the sudoers rule?"
+        confirm.informativeText = "Insomniac will ask for your admin password every time it toggles sleep in pmset mode. Caffeinate mode is unaffected."
+        confirm.alertStyle = .warning
+        confirm.addButton(withTitle: "Remove")
+        confirm.addButton(withTitle: "Cancel")
+        guard confirm.runModal() == .alertFirstButtonReturn else { return }
+
+        Task { @MainActor in
+            if sleepManager.isSleepDisabled {
+                await sleepManager.setSleepDisabled(false)
+            }
+            let removed = await sleepManager.revokePermissions()
+            let result = NSAlert()
+            result.messageText = removed ? "Rule removed" : "Couldn't remove the rule"
+            result.informativeText = removed
+                ? "/etc/sudoers.d/insomniac has been deleted."
+                : "The rule is still in place. You can remove it manually with: sudo rm /etc/sudoers.d/insomniac"
+            result.alertStyle = removed ? .informational : .warning
+            result.addButton(withTitle: "OK")
+            result.runModal()
         }
     }
 
@@ -679,23 +660,6 @@ struct SettingsView: View {
         sleepManager.watchedAppBundleIDs = current
         sleepManager.updateWatchedApps()
         loadWatchedApps()
-    }
-
-    private func addNetwork() {
-        let trimmed = newNetworkName.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.isEmpty else { return }
-        var current = sleepManager.watchedNetworks
-        if !current.contains(trimmed) {
-            current.append(trimmed)
-            sleepManager.watchedNetworks = current
-        }
-        newNetworkName = ""
-    }
-
-    private func removeNetwork(_ ssid: String) {
-        var current = sleepManager.watchedNetworks
-        current.removeAll { $0 == ssid }
-        sleepManager.watchedNetworks = current
     }
 
     private func selectDownloadFolder() {

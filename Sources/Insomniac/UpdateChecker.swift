@@ -71,6 +71,24 @@ enum UpdateChecker {
         return 0
     }
 
+    /// Fallback if the API's `html_url` isn't a URL we're willing to open.
+    private static var releasesPage: URL {
+        URL(string: "https://github.com/\(repo)/releases/latest")!
+    }
+
+    /// `html_url` arrives from a remote server, and it's about to be handed to
+    /// `NSWorkspace.open`, which will launch whatever handler matches the
+    /// scheme. Only follow it when it really is a GitHub web page.
+    private static func safeReleaseURL(_ candidate: String) -> URL {
+        guard let url = URL(string: candidate),
+              url.scheme?.lowercased() == "https",
+              let host = url.host?.lowercased(),
+              host == "github.com" || host.hasSuffix(".github.com") else {
+            return releasesPage
+        }
+        return url
+    }
+
     private static func presentUpdate(latest: String, url: String) {
         let alert = NSAlert()
         alert.messageText = "Update available"
@@ -78,8 +96,8 @@ enum UpdateChecker {
         alert.icon = NSImage(systemSymbolName: "arrow.down.circle.fill", accessibilityDescription: nil)
         alert.addButton(withTitle: "Download")
         alert.addButton(withTitle: "Later")
-        if alert.runModal() == .alertFirstButtonReturn, let link = URL(string: url) {
-            NSWorkspace.shared.open(link)
+        if alert.runModal() == .alertFirstButtonReturn {
+            NSWorkspace.shared.open(safeReleaseURL(url))
         }
     }
 

@@ -77,19 +77,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Longest session a URL is allowed to ask for (24h). Anything can hand us
+    /// an `insomniac://` link — a web page, a stray shortcut — so a URL can't
+    /// be trusted to set an unbounded countdown.
+    private static let maxURLDuration: TimeInterval = 24 * 60 * 60
+
     private func handleURL(_ url: URL) {
-        guard url.scheme == "insomniac" else { return }
+        guard url.scheme?.lowercased() == "insomniac" else { return }
 
         let host = url.host?.lowercased()
         switch host {
         case "toggle":
             sleepManager.toggleSleep()
         case "enable":
-            if let durationParam = url.queryParameter("duration") {
-                sleepManager.enableSleep(duration: TimeInterval(durationParam))
-            } else {
-                sleepManager.enableSleep(duration: nil)
-            }
+            sleepManager.enableSleep(duration: Self.urlDuration(from: url))
         case "disable":
             sleepManager.disableSleep()
         case "status":
@@ -97,6 +98,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         default:
             break
         }
+    }
+
+    /// Parses and clamps `?duration=` (seconds). Returns nil for "indefinite",
+    /// which is also what a malformed or non-positive value falls back to.
+    private static func urlDuration(from url: URL) -> TimeInterval? {
+        guard let raw = url.queryParameter("duration"),
+              let seconds = TimeInterval(raw),
+              seconds.isFinite, seconds > 0 else { return nil }
+        return min(seconds, maxURLDuration)
     }
 
     // MARK: - AppleScript commands
@@ -117,14 +127,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        if sleepManager.isSleepDisabled {
-            Task {
-                await sleepManager.setSleepDisabled(false)
-                NSApplication.shared.reply(toApplicationShouldTerminate: true)
-            }
-            return .terminateLater
+        guard sleepManager.isSleepDisabled else { return .terminateNow }
+
+        Task {
+            await sleepManager.setSleepDisabled(false)
+            NSApplication.shared.reply(toApplicationShouldTerminate: true)
         }
-        return .terminateNow
+
+        // Restoring sleep shells out to pmset. If that stalls, an unanswered
+        // `.terminateLater` leaves the app unquittable — the Watchdog is the
+        // safety net for the flag, so give up rather than hang forever.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
+            NSApplication.shared.reply(toApplicationShouldTerminate: true)
+        }
+
+        return .terminateLater
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -154,7 +171,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let name = sleepManager.isSleepDisabled ? "eye" : "eye.slash"
             button.image = NSImage(systemSymbolName: name, accessibilityDescription: "Insomniac")
 
-            if sleepManager.isSleepDisabled, let remaining = sleepManager.formatRemainingTime() {
+            if sleepManager.showMenuBarCountdown,
+               sleepManager.isSleepDisabled,
+               let remaining = sleepManager.formatRemainingTime() {
                 button.imagePosition = .imageLeft
                 button.attributedTitle = NSAttributedString(
                     string: " " + remaining,
@@ -180,25 +199,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Keeps the menu bar countdown ticking — but only if the user asked for a
+    /// countdown, and only while one is actually running.
+    ///
+    /// This timer used to run every 30 seconds for the whole session doing three
+    /// jobs. Two of them are gone: the watchdog no longer needs a heartbeat (it
+    /// detects death through a pipe now), and the low-battery cutoff is driven by
+    /// IOKit power notifications. What's left is cosmetic, so it's opt-in.
+    ///
+    /// With the countdown off — the default — an active session runs no timers
+    /// at all. The remaining time is still shown, computed on demand, whenever
+    /// the menu is opened.
     private func startTooltipTimer() {
         tooltipTimer?.invalidate()
         tooltipTimer = nil
 
-        // Only run the repeating timer when there's actual work to do:
-        // countdown display, watchdog heartbeats, or battery cutoff checks.
-        guard sleepManager.isSleepDisabled else { return }
+        guard sleepManager.showMenuBarCountdown,
+              sleepManager.isSleepDisabled,
+              sleepManager.sleepDisabledUntil != nil else { return }
 
-        tooltipTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+        // The display only ever shows whole minutes, so align to the minute
+        // rather than ticking twice as often as anything can change.
+        let timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
                 self.updateIcon()
                 self.updateTooltip()
-                if !self.sleepManager.useCaffeinate {
-                    Watchdog.shared.beat()
-                }
-                self.sleepManager.checkBatteryCutoff()
             }
         }
+        // Wide slack so macOS folds this into a wake it was already making.
+        timer.tolerance = 15
+        tooltipTimer = timer
     }
 
     // MARK: - Status item click
@@ -229,6 +260,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Menu
 
     private func showMenu() {
+        // Recompute on open. With no repeating timer, this is what keeps the
+        // remaining time honest — and it's the only moment anyone can read it.
+        updateIcon()
+        updateTooltip()
+
         let menu = NSMenu()
         menu.autoenablesItems = false
 
@@ -423,7 +459,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func openSettings() {
-        if let existing = settingsWindow, existing.isVisible {
+        // `isVisible` is false for a window the user closed with the red X, but
+        // `isReleasedWhenClosed = false` means it's still alive and still ours.
+        // Reopening it beats abandoning it and building another.
+        if let existing = settingsWindow {
             existing.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
@@ -445,7 +484,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var aboutWindow: NSWindow?
 
     @objc private func showAbout() {
-        if let existing = aboutWindow, existing.isVisible {
+        if let existing = aboutWindow {
             existing.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
